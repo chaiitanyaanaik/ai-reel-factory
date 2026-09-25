@@ -1,0 +1,19 @@
+{
+  "headline_text": "Your Child's Issues Mirror Your Unhealed Energy.",
+  "selected_frame": "C:\\Work documents\\ai_reel_factory\\projects\\project_001\\cover\\frame_candidates\\frame_01_0_3s.jpg",
+  "frame_candidates": [
+    "C:\\Work documents\\ai_reel_factory\\projects\\project_001\\cover\\frame_candidates\\frame_01_0_3s.jpg",
+    "C:\\Work documents\\ai_reel_factory\\projects\\project_001\\cover\\frame_candidates\\frame_02_0_8s.jpg",
+    "C:\\Work documents\\ai_reel_factory\\projects\\project_001\\cover\\frame_candidates\\frame_03_1_2s.jpg",
+    "C:\\Work documents\\ai_reel_factory\\projects\\project_001\\cover\\frame_candidates\\frame_04_1_8s.jpg"
+  ],
+  "cover_output": "C:\\Work documents\\ai_reel_factory\\projects\\project_001\\final\\cover.jpg",
+  "used_fallback": false,
+  "error_message": "",
+  "cover_image_model": "gemini-3-pro-image-preview",
+  "cover_require_ai": "1",
+  "global_style_references_used": [
+    "C:\\Work documents\\ai_reel_factory\\cover_reference_style_01.png.png",
+    "C:\\Work documents\\ai_reel_factory\\cover_reference_style_02.png.png"
+  ]
+}

@@ -1,0 +1,48 @@
+# API keys and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Large video/audio files
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wav
+*.mp3
+*.aac
+
+# Generated project outputs
+projects/*/raw_clips/
+projects/*/merged/
+projects/*/transcripts/
+projects/*/broll/
+projects/*/final/
+projects/*/subtitles/
+
+# Raw script/plan intermediates (keep if you want version history)
+# projects/*/raw_script.md
+# projects/*/final_script.json
+# projects/*/editing_plan.json
+# projects/*/filler_segments.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp

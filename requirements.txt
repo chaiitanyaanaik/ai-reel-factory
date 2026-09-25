@@ -1,0 +1,19 @@
+# AI Reel Factory — local pipeline
+# Python 3.10+
+
+# Transcription
+openai-whisper>=20231117
+
+# Load API keys from .env (optional but recommended)
+python-dotenv>=1.0.0
+
+# AI B-roll (Google Veo via Gemini API). Set GOOGLE_API_KEY or GEMINI_API_KEY.
+google-genai>=1.10.0
+
+# Pexels stock video (free B-roll). Set PEXELS_API_KEY.
+requests>=2.28.0
+
+# Deterministic cover layout compositing (headline + speaker image).
+Pillow>=10.0.0
+
+# FFmpeg must be installed on the system (merge + render)

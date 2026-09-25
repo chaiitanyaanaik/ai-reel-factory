@@ -1,0 +1,82 @@
+{
+  "timeline": [
+    {
+      "start": 0.0,
+      "end": 10.462608695652174,
+      "type": "aroll",
+      "suggestion": "",
+      "broll_index": null
+    },
+    {
+      "start": 10.462608695652174,
+      "end": 15.462608695652174,
+      "type": "broll",
+      "suggestion": "A young child observing their parent's stressed facial expression while scrolling on a phone. Camera: slow push-in on the child's face from a low angle. Soft, diffused living room light.",
+      "broll_index": 2
+    },
+    {
+      "start": 23.540869565217392,
+      "end": 28.540869565217392,
+      "type": "broll",
+      "suggestion": "A child at a kitchen table subtly mimicking their parent's hunched, tense posture. Camera: quick track from behind the child to reveal the matching posture. Bright kitchen window light.",
+      "broll_index": 3
+    },
+    {
+      "start": 34.003478260869564,
+      "end": 44.466086956521735,
+      "type": "aroll",
+      "suggestion": "",
+      "broll_index": null
+    },
+    {
+      "start": 44.466086956521735,
+      "end": 49.466086956521735,
+      "type": "broll",
+      "suggestion": "Close-up of a printed child's astrological chart, with a translucent overlay of a parent's chart showing shared aspects. Camera: slow zoom on the overlapping planetary symbols. Warm desk lamp glow.",
+      "broll_index": 5
+    },
+    {
+      "start": 52.313043478260866,
+      "end": 57.313043478260866,
+      "type": "broll",
+      "suggestion": "A mother holding a toddler, looking out a window with a cautious, slightly fearful expression. Camera: gentle pull-back from mother and child to show the external world. Soft daylight through curtains.",
+      "broll_index": 6
+    },
+    {
+      "start": 65.39130434782608,
+      "end": 78.4695652173913,
+      "type": "aroll",
+      "suggestion": "",
+      "broll_index": null
+    },
+    {
+      "start": 78.4695652173913,
+      "end": 83.4695652173913,
+      "type": "broll",
+      "suggestion": "A child hesitating at an open doorway to a bright, inviting room, then nervously turning away. Camera: slow dolly forward, then quick pull-back as the child retreats. Natural hallway light with a bright room beyond.",
+      "broll_index": 8
+    },
+    {
+      "start": 91.54782608695652,
+      "end": 99.39478260869565,
+      "type": "aroll",
+      "suggestion": "",
+      "broll_index": null
+    },
+    {
+      "start": 99.39478260869565,
+      "end": 109.85739130434783,
+      "type": "aroll",
+      "suggestion": "",
+      "broll_index": null
+    },
+    {
+      "start": 109.85739130434783,
+      "end": 114.85739130434783,
+      "type": "broll",
+      "suggestion": "A parent and child holding hands, walking joyfully towards a wide-open, sunlit space with a clear blue sky. Camera: sweeping crane shot from behind, revealing the expansive, hopeful view. Golden hour sunlight.",
+      "broll_index": 11
+    }
+  ],
+  "filler_ranges": []
+}

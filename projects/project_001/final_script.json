@@ -1,0 +1,76 @@
+{
+  "hook": {
+    "start": 0,
+    "end_seconds": 4,
+    "note": "speaker faces camera for the hook"
+  },
+  "beats": [
+    {
+      "type": "aroll",
+      "start": 0,
+      "end_seconds": 4,
+      "suggestion": ""
+    },
+    {
+      "type": "broll",
+      "start": 4,
+      "end_seconds": 9,
+      "suggestion": "A young child observing their parent's stressed facial expression while scrolling on a phone. Camera: slow push-in on the child's face from a low angle. Soft, diffused living room light."
+    },
+    {
+      "type": "broll",
+      "start": 9,
+      "end_seconds": 13,
+      "suggestion": "A child at a kitchen table subtly mimicking their parent's hunched, tense posture. Camera: quick track from behind the child to reveal the matching posture. Bright kitchen window light."
+    },
+    {
+      "type": "aroll",
+      "start": 13,
+      "end_seconds": 17,
+      "suggestion": ""
+    },
+    {
+      "type": "broll",
+      "start": 17,
+      "end_seconds": 20,
+      "suggestion": "Close-up of a printed child's astrological chart, with a translucent overlay of a parent's chart showing shared aspects. Camera: slow zoom on the overlapping planetary symbols. Warm desk lamp glow."
+    },
+    {
+      "type": "broll",
+      "start": 20,
+      "end_seconds": 25,
+      "suggestion": "A mother holding a toddler, looking out a window with a cautious, slightly fearful expression. Camera: gentle pull-back from mother and child to show the external world. Soft daylight through curtains."
+    },
+    {
+      "type": "aroll",
+      "start": 25,
+      "end_seconds": 30,
+      "suggestion": ""
+    },
+    {
+      "type": "broll",
+      "start": 30,
+      "end_seconds": 35,
+      "suggestion": "A child hesitating at an open doorway to a bright, inviting room, then nervously turning away. Camera: slow dolly forward, then quick pull-back as the child retreats. Natural hallway light with a bright room beyond."
+    },
+    {
+      "type": "aroll",
+      "start": 35,
+      "end_seconds": 38,
+      "suggestion": ""
+    },
+    {
+      "type": "aroll",
+      "start": 38,
+      "end_seconds": 42,
+      "suggestion": ""
+    },
+    {
+      "type": "broll",
+      "start": 42,
+      "end_seconds": 46,
+      "suggestion": "A parent and child holding hands, walking joyfully towards a wide-open, sunlit space with a clear blue sky. Camera: sweeping crane shot from behind, revealing the expansive, hopeful view. Golden hour sunlight."
+    }
+  ],
+  "total_duration_seconds": 46
+}
