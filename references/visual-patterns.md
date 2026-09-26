@@ -24,22 +24,23 @@ A script provides the audio, but visuals retain the eye.
 
 ---
 
-## 5. Parenting + Astrology Visual Patterns
+## 5. Parenting Visual Patterns (posh Indian home)
 
 Use visuals that literally show what the line is saying, grounded in real life:
 
-*   **Parent–Child Mirroring:** Child copying a parent's posture, facial tension, or habits at home (kitchen table, living room, bedroom doorway).
-*   **Chart Analysis Close-Ups:** Hands circling placements on a printed astrology chart, overlapping child and parent charts on a table.
-*   **Household Micro-Moments:** Late-night scrolling, rushed mornings, quiet meals — clear parent/child presence in believable homes.
-*   **Healing & Connection:** Hugs, eye-level conversations, journaling beside a sleeping child, small rituals.
+*   **Parent–Child Mirroring:** Child copying a parent's posture, facial tension, or habits at home (designer kitchen, living room, bedroom doorway).
+*   **Household Micro-Moments:** Late-night scrolling, rushed mornings, quiet meals — clear parent/child presence in a **posh contemporary Indian** apartment or villa.
+*   **Healing & Connection:** Hugs, eye-level conversations, sitting together on a sofa, small daily rituals.
+*   **Astrology props (rare):** Printed charts / sky symbols **only** when the spoken line explicitly mentions a chart, planet, or birth chart — never as default set dressing.
 
 Prefer:
 
-*   Recognizable, specific locations (kitchen, hallway, couch, balcony).
+*   Recognizable, specific **upscale Indian** locations (marble kitchen island, curated living room, balcony garden).
+*   Indian casting; elevated casual wardrobe.
 *   Observable actions that match the spoken sentence.
-*   Faces and body language when talking about emotions or tension.
 
 Avoid:
 
+*   Default astrology iconography (zodiac wheels, constellation overlays, glowing mystical props) when the line is about behavior/emotion only.
 *   Generic forests, rivers, abstract glowing walls, or random light leaks **unless** the script line explicitly mentions nature or that symbol.
 *   Shots where the viewer cannot quickly tell how the visual connects to the words.

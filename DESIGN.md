@@ -134,7 +134,7 @@ The broll stage (`video_engine/broll.py`) sources clips in priority order:
 
 | Service | Default | Env Override | Cost |
 |---------|---------|--------------|------|
-| Script & Plan | `gemini-2.5-flash` | `GEMINI_MODEL` | Cheap |
+| Script & Plan | `gemini-3.8-flash` | `GEMINI_MODEL` | Cheap |
 | B-roll search | Pexels API | `PEXELS_API_KEY` | Free |
 | B-roll fallback | `veo-3.0-generate-001` | `VEO_MODEL` | Expensive |
 

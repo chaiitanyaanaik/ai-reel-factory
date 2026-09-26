@@ -1,0 +1,116 @@
+{
+  "project_id": "project_001",
+  "mode": "video_first",
+  "job_id": "ad012fb90cfe",
+  "started_at": "2026-09-25T15:48:59.677681Z",
+  "finished_at": "2026-09-25T15:50:18.669969Z",
+  "status": "completed",
+  "stages": [
+    {
+      "name": "plan",
+      "status": "ok",
+      "started_at": "2026-09-25T15:48:59.678998Z",
+      "finished_at": "2026-09-25T15:49:07.506011Z",
+      "duration_seconds": 7.827,
+      "message": null,
+      "error": null
+    },
+    {
+      "name": "align",
+      "status": "ok",
+      "started_at": "2026-09-25T15:49:07.506669Z",
+      "finished_at": "2026-09-25T15:49:07.510356Z",
+      "duration_seconds": 0.004,
+      "message": null,
+      "error": null
+    },
+    {
+      "name": "broll",
+      "status": "ok",
+      "started_at": "2026-09-25T15:49:07.510825Z",
+      "finished_at": "2026-09-25T15:49:22.333728Z",
+      "duration_seconds": 14.823,
+      "message": null,
+      "error": null
+    },
+    {
+      "name": "subtitles",
+      "status": "ok",
+      "started_at": "2026-09-25T15:49:22.334917Z",
+      "finished_at": "2026-09-25T15:49:22.346026Z",
+      "duration_seconds": 0.011,
+      "message": null,
+      "error": null
+    },
+    {
+      "name": "render",
+      "status": "ok",
+      "started_at": "2026-09-25T15:49:22.346708Z",
+      "finished_at": "2026-09-25T15:50:18.669623Z",
+      "duration_seconds": 56.323,
+      "message": null,
+      "error": null
+    }
+  ],
+  "broll": [
+    {
+      "broll_index": 1,
+      "source": "skipped_keep_aroll",
+      "suggestion": "Close-up of a parent gently touching a toddler's hand. Camera: Slow push-in. A quiet, sunlit living room.",
+      "path": null,
+      "detail": "No Pexels match; Veo disabled, over budget, or failed"
+    },
+    {
+      "broll_index": 2,
+      "source": "skipped_keep_aroll",
+      "suggestion": "A parent pushing aside a stack of educational flashcards on a table. Camera: Handheld top-down view.",
+      "path": null,
+      "detail": "No Pexels match; Veo disabled, over budget, or failed"
+    },
+    {
+      "broll_index": 3,
+      "source": "skipped_keep_aroll",
+      "suggestion": "Parent taking a deep breath while the child plays nearby. Camera: Over-the-shoulder shot showing calm body language.",
+      "path": null,
+      "detail": "No Pexels match; Veo disabled, over budget, or failed"
+    },
+    {
+      "broll_index": 4,
+      "source": "skipped_keep_aroll",
+      "suggestion": "Parent and child laughing together at a kitchen table, sunlight streaming in. Camera: Gentle pan across the scene.",
+      "path": null,
+      "detail": "No Pexels match; Veo disabled, over budget, or failed"
+    },
+    {
+      "broll_index": 5,
+      "source": "skipped_keep_aroll",
+      "suggestion": "Detailed shot of an astrology chart laid out on a table with notes scribbled in the margin. Camera: Slow macro zoom.",
+      "path": null,
+      "detail": "No Pexels match; Veo disabled, over budget, or failed"
+    },
+    {
+      "broll_index": 6,
+      "source": "skipped_keep_aroll",
+      "suggestion": "Close-up of a child clinging to the parent's leg in a doorway. Camera: Soft focus, intimate and warm lighting.",
+      "path": null,
+      "detail": "No Pexels match; Veo disabled, over budget, or failed"
+    }
+  ],
+  "veo_clips_used": 0,
+  "veo_max_clips": 3,
+  "models": {
+    "gemini": "gemini-3.1-flash-lite",
+    "veo": "veo-3.0-generate-001"
+  },
+  "errors": [],
+  "artifacts": {
+    "reel": "final/reel.mp4",
+    "transcript": "transcripts/transcript.json",
+    "timeline": "cuts/timeline.json",
+    "script": "raw_script.md",
+    "plan": "final_script.json",
+    "run_report": "run_report.json",
+    "enhanced": "merged/enhanced.mp4",
+    "merged": "merged/merged.mp4"
+  }
+}

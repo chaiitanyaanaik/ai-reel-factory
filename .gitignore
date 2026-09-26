@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
 # Python
 __pycache__/
@@ -30,6 +33,11 @@ projects/*/transcripts/
 projects/*/broll/
 projects/*/final/
 projects/*/subtitles/
+projects/*/cover/
+projects/.usage/
+
+# Scrapes / local agent artifacts
+.firecrawl/
 
 # Raw script/plan intermediates (keep if you want version history)
 # projects/*/raw_script.md
@@ -46,3 +54,8 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo

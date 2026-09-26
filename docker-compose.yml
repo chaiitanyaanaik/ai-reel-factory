@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    # Inject secrets at runtime — never COPY .env into the image (.dockerignore excludes it).
+    # Use one prod Google/Pexels key (plus a separate staging key); do not hop free keys for quota.
+    env_file:
+      - .env
+    environment:
+      # Uncomment for shared deploys:
+      # ENVIRONMENT: production
+      # AUTH_MODE: clerk
+      # COOKIE_SECURE: "1"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    volumes:
+      - ./projects:/app/projects
+      - ./style_guide.json:/app/style_guide.json:ro
+      - ./references:/app/references:ro
+      - ./prompts:/app/prompts:ro
+    restart: unless-stopped

@@ -1,58 +1,46 @@
----
-description: AI Reel Factory project architecture, pipeline stages, and conventions
-alwaysApply: true
----
-
 # AI Reel Factory
 
-Converts topic + recorded video clips into an edited Instagram Reel. Locally orchestrated pipeline.
+Converts **uploaded talking-head clips** into an edited Instagram Reel (video-first, lip-sync safe). Locally orchestrated pipeline + FastAPI job API.
 
-## Pipeline Stages (in order)
-1. **script** — Gemini generates `raw_script.md` + `final_script.json` from `topic.txt` + references + style guide.
-2. **merge** — FFmpeg concat `raw_clips/` → `merged/merged.mp4`
+## Pipeline Stages (video-first, default)
+1. **merge** — FFmpeg concat `raw_clips/` → `merged/merged.mp4`
+2. **enhance** — FFmpeg social audio preset → `merged/enhanced.mp4`
 3. **transcribe** — Whisper → `transcripts/transcript.json`
-4. **align** — Scales plan to transcript; caps each B-roll ~5s (`MAX_BROLL_SECONDS`); optional um/ah fillers only if `USE_FILLER_BROLL=1` + `filler_segments.json` (run `run_filler_stage` manually to generate).
-5. **broll** — Pexels → Veo; Veo clips ~5s.
-6. **subtitles** — SRT (fillers stripped in captions).
-7. **render** — 1.2x speed, flash, zoom, B-roll overlay (video only; speaker audio only), `SPEAKER_VOLUME_DB` boost (~2.5 dB default).
-8. **cover** (optional) — Gemini image models: A-roll frames from `final/reel.mp4` + `raw_script.md` + optional repo-root `cover_reference_style_*.png`; → `final/cover.jpg`. See `README.md`.
+4. **plan** — Gemini cleaned transcript + editing plan (same spoken words; lip-sync guard)
+5. **align** — Anchors beats to transcript; caps each B-roll ~5s (`MAX_BROLL_SECONDS`)
+6. **broll** — Pexels first; Veo only if `BROLL_USE_VEO=1` + under `VEO_MAX_CLIPS`; else keep A-roll
+7. **subtitles** — SRT (filler words stripped in caption text)
+8. **render** — 1.2x, flash, zoom, B-roll overlay (speaker audio only)
+9. **cover** (optional) — Gemini image cover → `final/cover.jpg`
+
+Teleprompter mode (`--mode teleprompter`): **script** from topic first, then merge→… (no `plan` stage; script stage writes the plan).
 
 ## Key Architecture Decisions
-- **Aroll-first hook**: First beat is always aroll (speaker). Enforced in prompt + `_enforce_aroll_start()` in `editing_plan.py`.
-- **B-roll overlay, not concat**: Preserves original audio timeline. `tpad` fixes FFmpeg overlay timing bug (frames consumed early).
-- **Pexels-first B-roll**: `pexels_client.py` extracts keywords from Subject/Camera/Scene suggestions. Veo only when Pexels has no match.
-- **Style guide**: `style_guide.json` at root (global) or per-project. Injected into Gemini prompts and Veo suffix.
-- **References**: `references/*.md` loaded by `llm.py:load_references()` and injected into Gemini prompts.
+- **Lip-sync invariant**: cleaned script must not rewrite dialogue (`script_engine/lip_sync.py`).
+- **Aroll-first hook**: Enforced in prompt + `_enforce_aroll_start()` in `editing_plan.py`.
+- **B-roll overlay, not concat**: Preserves audio timeline. `tpad` fixes FFmpeg overlay timing.
+- **Pexels-first B-roll**: Veo opt-in with clip cap (cost control).
+- **Style guide** + **references/** injected into Gemini prompts.
 
 ## Key Files
-- `pipeline.py` — orchestrator, `--from`/`--to` stage selection
-- `script_engine/llm.py` — shared Gemini client, reference loader, style guide loader
-- `script_engine/editing_plan.py` — Gemini → JSON editing plan with Subject/Camera/Scene broll suggestions
-- `video_engine/broll.py` — Pexels→Veo fallback chain
-- `video_engine/pexels_client.py` — free stock video search + keyword extraction
-- `video_engine/veo_client.py` — Veo API + style guide suffix
-- `video_engine/render.py` — FFmpeg filter_complex (speed, flash, zoom, tpad overlay, fade, mute)
-- `video_engine/cover.py` — AI Instagram reel cover (multimodal: identity frame, optional global style refs, prompt)
+- `pipeline.py` — orchestrator, `--mode` / `--from` / `--to`
+- `api/main.py` — FastAPI (projects, upload, jobs, artifacts)
+- `jobs/` — background job runner
+- `schemas/` — Pydantic contracts
+- `core/` — env + project.json / run_report.json
+- `script_engine/plan_from_transcript.py` — video-first plan
+- `video_engine/enhance.py` — audio enhance stage
+- `PRODUCT.md` — product + interview narrative
 
 ## Env Variables
-- `GOOGLE_API_KEY` (required) — Gemini + Veo
-- `PEXELS_API_KEY` (recommended) — free stock broll
-- `BROLL_VEO_ONLY` — all B-roll via Veo
-- `SPEAKER_VOLUME_DB` — speaker gain (default 2.5; 0 to off)
-- `MAX_BROLL_SECONDS` — max B-roll on-screen (default 5)
-- `USE_FILLER_BROLL` — 1 to re-enable um/ah B-roll+mute (after manual filler stage)
-- `GEMINI_MODEL`, `VEO_MODEL`, `BROLL_USE_VEO`, `VEO_KINETIC_IG`, `VEO_EXPAND_PROMPT`
-- `COVER_IMAGE_MODEL`, `COVER_IMAGE_FALLBACK_MODEL`, `COVER_VISION_MODEL` — cover stage (see README)
+- `GOOGLE_API_KEY` (required)
+- `PEXELS_API_KEY` (recommended)
+- `BROLL_USE_VEO` — default `0`
+- `VEO_MAX_CLIPS` — default `3`
+- `AUDIO_PRESET` — default `social`
+- `SPEAKER_VOLUME_DB`, `MAX_BROLL_SECONDS`, `GEMINI_MODEL`, `VEO_MODEL`, cover model vars
 
-## Workflow for New Reels
-1. Create project folder with `topic.txt`
-2. Run `--from script --to script` — generates script + editing plan
-3. Speaker records video using `raw_script.md` as teleprompter
-4. Drop clips into `raw_clips/` as `01.mp4`, `02.mp4`, etc.
-5. Run `python pipeline.py <name> --from merge` (or full `python pipeline.py <name>`) — merge through **cover** by default; use `--to render` to stop before Instagram cover
-
-## Future Work
-- Explore cheaper video gen APIs as Veo fallback (Kling ~$0.08/sec, Seedance ~$0.06/sec, MiniMax $14.99/mo unlimited)
-- Kling free tier (66 daily credits) could replace Veo entirely for low-volume use
-- Consider Wan 2.5/2.6 (open source, self-hosted) for zero-cost AI video if GPU available
-- User was billed INR 5000 (~$60) on Veo before Pexels integration — cost control is important
+## Workflow for New Reels (video-first)
+1. Create `projects/<name>/raw_clips/01.mp4`…
+2. `python pipeline.py <name> --mode video_first` (or API job)
+3. Outputs: `final/reel.mp4`, optional `final/cover.jpg`, `run_report.json`

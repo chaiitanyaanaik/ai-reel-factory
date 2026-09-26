@@ -1,286 +1,329 @@
-# AI Reel Factory
+# ReelKut (AI Reel Factory)
 
-Converts a **topic + recorded video clips** into a **fully edited Instagram Reel** automatically.
+**ReelKut** turns uploaded talking-head clips into paced vertical Reels — lip-sync safe, with cutaways and captions. The spoken audio is never rewritten.
 
-Gemini writes the script (using your hook patterns, writing styles, and viral angles as reference), plans the edit, Pexels provides free stock B-roll (with Veo AI fallback), and FFmpeg renders the final vertical video -- all locally orchestrated.
+This repo is the local product + pipeline: **Vite landing & studio UI**, **FastAPI** job API with multi-user auth, and a **CLI** orchestrator.
 
----
-
-## What It Does
-
-1. **Generates a script** from your topic using Gemini, guided by your reference materials (hook patterns, viral angles, writing styles)
-2. **Creates an editing plan** -- always starts with speaker (A-roll hook), then alternates with B-roll
-3. **Merges raw clips** in filename order
-4. **Transcribes** using Whisper (word-level timestamps)
-5. **Aligns timeline** to real speech length; each B-roll shows for **~5 seconds max** (then back to speaker)
-6. **Sources B-roll** -- Pexels first, optional Veo; speaker audio is boosted slightly in the final mix; B-roll clips never add their own audio
-7. **Renders** 1080x1920 with 1.2x speed, zoom cuts, fades, white flash hook
-8. **Generates cover** from final reel frames + script context (AI-first)
-
-*(Optional: set `USE_FILLER_BROLL=1`, run the `filler` stage manually, then `align` — to cover um/ah with B-roll + mute again.)*
+| Doc | Purpose |
+|-----|---------|
+| [PRODUCT.md](PRODUCT.md) | Product invariants, API contract, demo script |
+| [DESIGN.md](DESIGN.md) | Architecture (overlay, `tpad`, Veo prompts) |
+| [TEAM_OVERVIEW.md](TEAM_OVERVIEW.md) | Short onboarding map |
+| [frontend/COLOR.md](frontend/COLOR.md) | Landing / UI design tokens |
 
 ---
 
-## Quick Start
+## What it does
 
-Step-by-step commands (PowerShell): see **[PYTHON_COMMANDS.md](PYTHON_COMMANDS.md)** for the full checklist.
+1. **Merge** raw clips (`01.mp4` / `1.mov`, …)
+2. **Enhance** speech (FFmpeg social preset)
+3. **Transcribe** with Whisper (word-level timestamps)
+4. **Plan** with an editor agent — cleaned transcript + A-roll/B-roll beats (**same spoken words**)
+5. **Align** beats to real speech times; safety-cap each B-roll length
+6. **Source B-roll** — reuse → **Veo** (default) / optional Pexels → else keep A-roll
+7. **Subtitles** + **render** 1080×1920 (speed, zoom cuts, overlays)
+8. **Cover** (optional) — AI thumbnail from reel frames + script
 
-```powershell
-# 1. Install + FFmpeg on PATH (see PYTHON_COMMANDS.md)
-pip install -r requirements.txt
-
-# 2. Keys
-copy .env.example .env
-# Edit .env: GOOGLE_API_KEY (required), PEXELS_API_KEY (recommended)
-
-# 3. New project
-mkdir projects\my_reel
-# Edit projects\my_reel\topic.txt
-
-# 4. Script + plan
-python pipeline.py my_reel --from script --to script
-
-# 5. Record clips → projects\my_reel\raw_clips\01.mp4, 02.mp4, ...
-
-# 6. Merge → render (video)
-python pipeline.py my_reel --from merge --to render
-# → projects/my_reel/final/reel.mp4
-
-# 7. (Optional) Instagram cover image
-python pipeline.py my_reel --from cover --to cover
-# → projects/my_reel/final/cover.jpg
-```
-
-**Default** `python pipeline.py my_reel` (no flags) runs **all** stages through **`cover`** → both `reel.mp4` and `cover.jpg`. To get video only: `python pipeline.py my_reel --to render`, then optionally run step 7 for the cover.
+**Secondary mode (`teleprompter`):** topic → Gemini invents a script → you record → same video chain from merge onward.
 
 ---
 
-## Pipeline Stages
+## Product highlights (current)
 
-```
-topic.txt ──► Script (Gemini + references) ──► Editing Plan (Gemini + references)
-                                                     │
-raw_clips/ ──► Merge ──► Transcribe (Whisper) ──► Align Timeline ──► B-roll ──► Render ──► Cover
-                                                                                                 │
-                                                                                   final/reel.mp4 + final/cover.jpg
-```
-
-| Stage | What it does | Key output |
-|-------|-------------|------------|
-| `script` | Gemini generates script + editing plan from topic + references | `raw_script.md`, `final_script.json` |
-| `merge` | FFmpeg concatenates raw clips in filename order | `merged/merged.mp4` |
-| `transcribe` | Whisper transcription with word timestamps | `transcripts/transcript.json` |
-| `align` | Scales plan to transcript; caps each B-roll ~5s; optional fillers if `USE_FILLER_BROLL=1` | `cuts/timeline.json` |
-| `broll` | Pexels stock first, Veo fallback | `broll/001.mp4, 002.mp4` (and `filler.mp4` only if fillers enabled) |
-| `subtitles` | Creates SRT captions (fillers stripped) | `subtitles/captions.srt` |
-| `render` | Composites A-roll + B-roll with effects | `final/reel.mp4` |
-| `cover` | Extracts A-roll frame candidates from `final/reel.mp4`, uses full script context, and generates an AI cover image | `final/cover.jpg`, `cover/prompt.txt`, `cover/metadata.json` |
-
-### Instagram reel cover (`cover` stage)
-
-The `cover` stage produces a **fully AI-generated** vertical cover image for use as an Instagram Reel thumbnail/cover art. Identity comes from your **A-roll** (extracted frames from `final/reel.mp4`); layout and editorial style can follow **optional global reference images** at the repo root.
-
-**Prerequisites**
-
-- `projects/<name>/final/reel.mp4` (run `render` first, or use `--from cover --to cover` on an already-rendered project).
-- `projects/<name>/raw_script.md` (full script text drives hook extraction in prompts).
-- `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) for Gemini image models.
-
-**What it does**
-
-1. Extracts several early-frame JPEGs from `final/reel.mp4` via FFmpeg and picks a best candidate.
-2. Builds an editorial-style prompt (magazine layout, asymmetry, single hook, no subtext — see `video_engine/cover.py`).
-3. Sends a **multimodal** request in this order: **`[1]` identity frame** → **`[2]`, `[3]` … style references** (if present) → **text prompt last**.
-4. Primary model: `COVER_IMAGE_MODEL` (default `gemini-3-pro-image-preview`). On failure, tries `COVER_IMAGE_FALLBACK_MODEL` (default `gemini-3.1-flash-image-preview`). If **both** fail, the stage **raises an error** (no non-AI stitched fallback).
-
-**Global style references (optional, all projects)**
-
-Place one or more images at the **repository root** (not under `projects/`):
-
-| File (examples) | Role |
-|-----------------|------|
-| `cover_reference_style.png` | Single style/layout reference |
-| `cover_reference_style_01.png` or `cover_reference_style_01.png.png` | Style reference 1 |
-| `cover_reference_style_02.png` or `cover_reference_style_02.png.png` | Style reference 2 |
-
-Detected files are attached after the A-roll frame and listed in `projects/<name>/cover/metadata.json` under `global_style_references_used`.
-
-**Outputs**
-
-| Path | Purpose |
-|------|---------|
-| `projects/<name>/final/cover.jpg` | Final cover image |
-| `projects/<name>/cover/prompt.txt` | Exact prompt sent to the model |
-| `projects/<name>/cover/metadata.json` | Model used, fallback flag, paths, errors |
-| `projects/<name>/cover/selected_frame.jpg` | Chosen A-roll frame |
-| `projects/<name>/cover/frame_candidates/` | Candidate frames from the reel |
-
-**Environment variables** for cover are listed in the table below (`COVER_IMAGE_MODEL`, `COVER_IMAGE_FALLBACK_MODEL`, `COVER_VISION_MODEL`).
-
-Run specific stages:
-
-```powershell
-python pipeline.py my_reel --from broll --to render
-
-# Generate cover only (for already-rendered reels)
-python pipeline.py my_reel --from cover --to cover
-```
-
----
-
-## Project Structure
-
-```
-ai_reel_factory/
-├── pipeline.py              # Main orchestrator
-├── style_guide.json         # Global visual style defaults
-├── .env                     # API keys (not committed)
-├── prompts/                 # LLM prompt templates
-│   ├── script_generation.txt
-│   └── editing_plan.txt
-├── references/              # Creative reference materials (injected into LLM prompts)
-│   ├── hook-patterns.md
-│   ├── viral-angles.md
-│   ├── writing-styles.md
-│   └── visual-patterns.md
-├── script_engine/           # Script + editing plan (Gemini)
-│   ├── generate_script.py
-│   ├── editing_plan.py
-│   └── llm.py              # Shared Gemini client + reference loader
-├── video_engine/            # Video processing
-│   ├── merge_clips.py
-│   ├── transcribe.py
-│   ├── filler_detection.py
-│   ├── timeline.py
-│   ├── broll.py             # Pexels-first, Veo-fallback orchestrator
-│   ├── pexels_client.py     # Free stock video search + download
-│   ├── veo_client.py        # Veo API + style guide injection
-│   ├── subtitles.py
-│   ├── render.py            # FFmpeg filter_complex renderer
-│   └── cover.py             # AI reel cover (A-roll frame + optional style refs + Gemini image)
-└── projects/
-    └── project_001/
-        ├── topic.txt
-        ├── style_guide.json  # Optional per-project style override
-        ├── raw_clips/
-        ├── merged/
-        ├── transcripts/
-        ├── cuts/
-        ├── broll/
-        ├── subtitles/
-        ├── cover/              # cover stage: prompt, metadata, frame candidates
-        └── final/
-```
-
----
-
-## Style Guide
-
-A `style_guide.json` controls the visual look of all AI-generated content. Place one at the project root (global default) or inside a project folder (per-project override).
-
-```json
-{
-  "visual_tone": "warm, golden hour, cinematic",
-  "camera_style": "smooth steady movements, 35mm lens feel, shallow depth of field",
-  "mood": "intimate, hopeful, gentle energy",
-  "color_palette": "warm tones, soft highlights, muted shadows, natural lighting",
-  "avoid": "no harsh lighting, no text overlays, no logos, no stock-photo feel",
-  "format": "vertical 9:16, must look like real video not a photograph, continuous fluid motion throughout",
-  "filler_clip": "Soft sunlight streaming through a window. Camera: slow steady pan. Dust particles floating, curtains swaying gently. No people, no text."
-}
-```
-
-The style guide is injected into:
-- **Gemini** when generating scripts and editing plans
-- **Veo** as a prompt suffix for every B-roll clip (when Veo fallback is used). Optional `broll_casting` text is appended to Veo prompts when set in `style_guide.json` (e.g. regional or casting hints).
-- **Filler clips** use the `filler_clip` field as their Veo generation prompt
-
----
-
-## Reference Materials
-
-Files in `references/` are injected directly into Gemini prompts so the LLM follows your creative frameworks:
-
-| File | Used by | Content |
-|------|---------|---------|
-| `hook-patterns.md` | Script generation | 5 hook formulas (negative urgency, curiosity gap, etc.) |
-| `viral-angles.md` | Script generation | 4 viral angle frameworks (villain, counter-intuitive, etc.) |
-| `writing-styles.md` | Script + editing plan | Punchy & Deep Dive styles + anti-slop rules |
-| `visual-patterns.md` | Editing plan | B-roll ratio, editing pacing, zoom cuts, text overlay rules |
-
-Edit these files to change how scripts and plans are generated.
-
----
-
-## Render Effects
-
-The final render applies these effects via FFmpeg:
-
-- **1.2x playback speed** on A-roll (audio + video)
-- **Alternating zoom cuts** (1.1x center crop on every other A-roll segment)
-- **Fade transitions** (0.25s fade-in/out on each B-roll overlay)
-- **White flash** at video start (0.08s fade from white)
-- **Speaker gain** (~2.5 dB by default; set `SPEAKER_VOLUME_DB=0` to disable)
-- **Audio cleanup (optional)**: denoise/EQ/compression via env vars (see below)
-- **Video clarity (optional)**: higher-quality scaling + optional denoise + mild sharpen via env vars (see below)
-- **Filler muting** (only if `USE_FILLER_BROLL=1` and filler segments exist in the timeline)
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GOOGLE_API_KEY` | Yes | Google AI Studio key (for Gemini text + Veo video) |
-| `PEXELS_API_KEY` | Recommended | Free Pexels key for stock B-roll ([get one here](https://www.pexels.com/api/)) |
-| `GEMINI_MODEL` | No | Text model (default: `gemini-2.5-flash`) |
-| `VEO_MODEL` | No | Video model for fallback (default: `veo-3.0-generate-001`) |
-| `BROLL_USE_VEO` | No | Set to `0` to disable Veo fallback (Pexels only, zero cost) |
-| `BROLL_VEO_ONLY` | No | Set to `1` to skip Pexels and generate **all** B-roll with Veo (script-aligned AI clips only) |
-| `VEO_KINETIC_IG` | No | Set to `1` to enable IG-style kinetic Veo prompts (fast, high-energy B-roll). Off by default for more neutral/cinematic prompts. |
-| `VEO_EXPAND_PROMPT` | No | Set to `1` to have Gemini expand each B-roll idea into a detailed Veo prompt (extra Gemini call per Veo clip; combines well with `VEO_KINETIC_IG=1`) |
-| `SPEAKER_VOLUME_DB` | No | dB boost on speaker audio after speed-up (default `2.5`; set `0` to disable) |
-| `BURN_IN_CAPTIONS` | No | `1` to burn captions into the final video (recommended); `0` to skip |
-| `CAPTION_MARGIN_V` | No | Caption vertical margin/padding in pixels (default `80`) |
-| `CAPTION_FONT_SIZE` | No | Caption font size for burn-in in points/pixels-ish (default `54`) |
-| `FLASH_ON_BROLL` | No | `1` to show short white flashes at B-roll start times |
-| `FLASH_DURATION_FLASH` | No | Flash duration in seconds (default `0.06`) |
-| `AUDIO_DENOISE` | No | `0` (off), `afftdn` (default denoise), or `arnndn` (RNNoise model). `1/true` maps to `afftdn`. |
-| `ARNNDN_MODEL_PATH` | No | Path to RNNoise model file when `AUDIO_DENOISE=arnndn` (if missing, falls back to `afftdn`). |
-| `AUDIO_HIGHPASS_HZ` | No | High-pass cutoff for rumble removal (default `100`). |
-| `AUDIO_LOWPASS_HZ` | No | Low-pass cutoff to tame hiss (default `12000`). |
-| `AUDIO_COMPRESS` | No | `1` to enable gentle speech compression/limiting (default `1`). |
-| `AUDIO_LOUDNORM` | No | `1` to apply loudness normalization (default `0`). |
-| `VIDEO_DENOISE` | No | `1` to apply light `hqdn3d` denoise after scaling (default `0`). |
-| `VIDEO_SHARPEN` | No | `1` to apply mild `unsharp` after scaling (default `1`). |
-| `SCALE_FLAGS` | No | FFmpeg scale algorithm (default `lanczos`). |
-| `MAX_BROLL_SECONDS` | No | Max seconds each B-roll stays on screen (default `5`) |
-| `USE_FILLER_BROLL` | No | Set to `1` to insert um/ah filler overlays (run `run_filler_stage` from `pipeline.py` first, then re-run `align`) |
-| `VEO_LOG_PROMPTS` | No | Set to `1` to **print** each Veo prompt and append to `projects/<name>/broll/veo_prompts.log` (timeline suggestion + full prompt) |
-| `VEO_PROMPT_LOG` | No | Custom log file path when `VEO_LOG_PROMPTS=1` (default: `broll/veo_prompts.log`) |
-| `RENDER_DEBUG_FILTERS` | No | `1` to print FFmpeg `filter_complex` for debugging/tuning. |
-| `COVER_VISION_MODEL` | No | Gemini text model used for optional headline refinement in `build_cover_prompt_context` (default: `GEMINI_MODEL` or `gemini-2.5-flash`). |
-| `COVER_IMAGE_MODEL` | No | Primary Gemini image model: identity + style refs + prompt (default: `gemini-3-pro-image-preview`). |
-| `COVER_IMAGE_FALLBACK_MODEL` | No | Secondary Gemini image model if primary returns no image (default: `gemini-3.1-flash-image-preview`). |
-| `COVER_REQUIRE_AI` | No | Reserved for metadata; cover output is **always** from an image model or the stage fails. |
-
-Notes:
-- When you run `pipeline.py`, the project reads keys and flags from `.env` (if `python-dotenv` is installed).
-- **Existing** B-roll files are reused. If you switch to Veo-only and want fresh outputs, delete `projects/<name>/broll/*.mp4` first.
-- **Cover:** Output is AI-only. If both `COVER_IMAGE_MODEL` and `COVER_IMAGE_FALLBACK_MODEL` fail, the stage errors; see `cover/metadata.json` for `error_message`.
-
-## B-roll Sourcing Priority
-
-1. **Existing clip on disk** -- if `broll/001.mp4` already exists, it's reused
-2. **Pexels stock video** (free) -- keywords are auto-extracted from broll suggestions
-3. **Veo AI generation** (paid) -- when Pexels has no match (or when `BROLL_VEO_ONLY=1`, which skips Pexels and uses Veo for every clip)
+- **Creator landing** (`frontend/`) — ReelKut brand, blue→indigo hero, Studio login, creator showcase
+- **Multi-user Phase 1** — JWT auth (`AUTH_MODE=dev` locally; `clerk` for public), projects scoped by `owner_id`
+- **Lip-sync guard** — plan stage rejects dialogue rewrites (≥85% word overlap)
+- **Veo Lite B-roll** — spoken-line–aware prompts, audio-off on Developer API, capped clip count
+- **Per-user rate limits** — daily caps on projects / jobs / B-roll edits (shared API key safety)
 
 ---
 
 ## Requirements
 
-- **Python 3.11+**
-- **FFmpeg** on PATH
-- **Google API key** with Gemini access (GCP billing only needed if using Veo)
-- **Pexels API key** (free, recommended) for stock B-roll
-- See `requirements.txt` for Python packages
+- Python **3.11+**
+- **FFmpeg** on `PATH`
+- **Node 20+** (frontend)
+- `GOOGLE_API_KEY` (Gemini + Veo)
+- `PEXELS_API_KEY` optional if you turn Veo-only off
+
+```bash
+cd /path/to/ai-reel-factory   # folder that contains pipeline.py
+python3 -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env          # fill in keys
+```
+
+---
+
+## Quick start (UI)
+
+```bash
+# Terminal 1 — API
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2 — UI
+cd frontend && npm install && npm run dev
+# → http://127.0.0.1:5173
+```
+
+1. Open the **landing** → sign in with email (dev auth)  
+2. **Library** — create a project or open a past reel  
+3. **Upload** — add clips, reorder with ↑↓, upload  
+4. **Extract script** — merge → enhance → transcribe → editor plan  
+5. **Generate B-roll** — align → Veo  
+6. **Final reel** — subtitles → render (+ optional cover)  
+
+Vite proxies `/auth`, `/projects`, and `/health` to the API (see `frontend/vite.config.ts`).
+
+---
+
+## Quick start (CLI, video-first)
+
+```bash
+mkdir -p projects/my_reel/raw_clips
+# copy takes into raw_clips/ as 01.mp4, 02.mp4 (or 1.mov, 2.mov)
+
+python pipeline.py my_reel --mode video_first --to render
+# → projects/my_reel/final/reel.mp4
+
+python pipeline.py my_reel --mode video_first --from cover --to cover
+# → projects/my_reel/final/cover.jpg
+```
+
+Resume after a failure:
+
+```bash
+python pipeline.py my_reel --mode video_first --from plan --to render
+```
+
+### Teleprompter mode
+
+```bash
+mkdir -p projects/my_reel
+echo "Your topic here" > projects/my_reel/topic.txt
+python pipeline.py my_reel --mode teleprompter --from script --to script
+# record using raw_script.md → drop clips into raw_clips/
+python pipeline.py my_reel --mode teleprompter --from merge --to render
+```
+
+---
+
+## Modes & stage order
+
+```text
+video_first (default):
+  merge → enhance → transcribe → plan → align → broll → subtitles → render → cover
+
+teleprompter:
+  script → merge → enhance → transcribe → align → broll → subtitles → render → cover
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--mode video_first\|teleprompter` | Pipeline mode |
+| `--from STAGE` | Start at stage |
+| `--to STAGE` | Stop after stage |
+
+---
+
+## Pipeline stages
+
+| Stage | Role | Key outputs |
+|-------|------|-------------|
+| `merge` | FFmpeg concat of `raw_clips/` | `merged/merged.mp4` |
+| `enhance` | Social audio preset | `merged/enhanced.mp4` |
+| `transcribe` | Whisper (uses enhanced if present) | `transcripts/transcript.json` |
+| `plan` | Editor agent: cleaned script + beats + guardrails | `raw_script.md`, `final_script.json` |
+| `script` | Teleprompter only: invent script + plan from topic | same as above |
+| `align` | Map beats to transcript; cap B-roll length | `cuts/timeline.json` |
+| `broll` | Veo / optional Pexels / skip→A-roll | `broll/00N.mp4`, `source_report.json` |
+| `subtitles` | SRT (filler words stripped from caption text) | `subtitles/captions.srt` |
+| `render` | Overlay composite @ 1080×1920 | `final/reel.mp4` |
+| `cover` | AI cover image | `final/cover.jpg` |
+
+Each run also updates `project.json` and `run_report.json`.
+
+---
+
+## Product invariants
+
+1. **Spoken audio is source of truth.** `raw_script.md` is a punctuated transcript, not a rewrite.
+2. **Lip-sync guard** — cleaned script must overlap ≥85% of transcript words (`script_engine/lip_sync.py`).
+3. **B-roll is overlay, not concat** — speaker audio (and lips) stay continuous. FFmpeg `tpad` keeps overlay timing correct.
+4. **Editor pacing is enforced in code**, not prompt-only (`script_engine/editor_agent.py`).
+
+---
+
+## Auth (multi-user Phase 1)
+
+| Mode | Env | Notes |
+|------|-----|--------|
+| `dev` (default) | `AUTH_MODE=dev` `AUTH_REQUIRED=1` | Email login → JWT; **local only** |
+| `off` | `AUTH_MODE=off` | Legacy open local API |
+| `clerk` | `AUTH_MODE=clerk` + `CLERK_ISSUER` | Verify Clerk Bearer JWT — **public rollout** |
+
+Frontend optional Clerk: set `VITE_CLERK_PUBLISHABLE_KEY` in `frontend/.env` (see `frontend/.env.example`).
+
+**Production checklist:**
+
+1. `ENVIRONMENT=production` — blocks `AUTH_MODE=dev` / `off` and weak `AUTH_SECRET`
+2. `AUTH_MODE=clerk` + Clerk on the frontend; never expose provider keys to the browser
+3. Secrets via host env / secret manager (`.dockerignore` keeps `.env` out of images)
+4. One **prod** Google key + one **staging** key; enable billing + budget alerts
+5. Per-user caps: `RATE_LIMIT_PROJECTS_PER_DAY`, `RATE_LIMIT_JOBS_PER_DAY`, `RATE_LIMIT_BROLL_EDITS_PER_DAY`
+6. `COOKIE_SECURE=1` on HTTPS; `CORS_ORIGINS` = real frontend only
+7. Media via short-lived `/auth/media-token` when possible
+
+`GET /auth/usage` returns the current user’s daily counters.
+
+---
+
+## API routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/health` | Liveness + auth mode |
+| `POST` | `/auth/login` | Dev login → JWT |
+| `GET` | `/auth/me` | Current user |
+| `GET` | `/auth/media-token` | Short-lived token for media URLs |
+| `GET` | `/auth/usage` | Per-user daily rate-limit counters |
+| `POST` | `/auth/logout` | Clear cookie |
+| `GET` | `/projects` | List **your** projects |
+| `POST` | `/projects` | Create project |
+| `GET` | `/projects/{id}` | Status + clips + artifacts |
+| `POST` | `/projects/{id}/clips` | Upload (`?replace=true` clears first) |
+| `GET` | `/projects/{id}/clips` | List clips in merge order |
+| `PUT` | `/projects/{id}/clips/order` | Resequence |
+| `GET` | `/projects/{id}/script` | Cleaned transcript text |
+| `POST` | `/projects/{id}/jobs` | Start job |
+| `GET` | `/projects/{id}/jobs/{job_id}` | Job status |
+| `GET` | `/projects/{id}/artifacts/reel` | Download reel |
+
+Interactive docs: http://127.0.0.1:8000/docs  
+
+---
+
+## Editor agent (B-roll planning)
+
+| Guardrail | Default env |
+|-----------|-------------|
+| Max B-rolls per video | `EDITOR_MAX_BROLL_COUNT=5` |
+| B-roll length | `EDITOR_MIN_BROLL_SECONDS=2` … `EDITOR_MAX_BROLL_SECONDS=5` |
+| Min gap between B-rolls | `EDITOR_MIN_BROLL_GAP=3.5` |
+| Face on hook | `EDITOR_MIN_HOOK_AROLL=3` |
+| Face on ending | `EDITOR_MIN_END_AROLL=2.5` |
+| Minimum A-roll share | `EDITOR_MIN_AROLL_SHARE=0.55` |
+
+`final_script.json` may include `editor_validation`, `editor_repairs`, and `editor_rules`.
+
+---
+
+## B-roll sourcing
+
+**Current product default: Google Veo Lite** (see `.env.example`).
+
+| Setting | Typical value |
+|---------|----------------|
+| `BROLL_VEO_ONLY` | `1` |
+| `BROLL_USE_VEO` | `1` |
+| `VEO_MODEL` | `veo-3.1-lite-generate-preview` |
+| `VEO_DURATION_SECONDS` | `4` |
+| `VEO_RESOLUTION` | `720p` |
+| `VEO_GENERATE_AUDIO` | `0` (Developer API; B-roll is muted in render) |
+| `VEO_MAX_CLIPS` | `5` |
+
+Prompts include the **spoken line** for the beat plus casting/style from `style_guide.json`. Optional: `VEO_EXPAND_PROMPT`, `VEO_LOG_PROMPTS`.
+
+Priority per segment: reuse existing file → Veo → skip (keep A-roll). Set `BROLL_VEO_ONLY=0` and add `PEXELS_API_KEY` to prefer stock.
+
+---
+
+## Render effects
+
+- **1.2×** speed (video + audio)
+- White flash at start
+- Alternating zoom cuts on A-roll
+- B-roll fullscreen overlays with fades (`tpad` + timed `overlay`)
+- Speaker gain (`SPEAKER_VOLUME_DB`)
+- Optional burn-in captions (`BURN_IN_CAPTIONS`)
+
+---
+
+## Project layout
+
+```text
+ai-reel-factory/
+├── pipeline.py
+├── api/main.py                 # FastAPI (ReelKut API)
+├── jobs/  schemas/  core/      # jobs, contracts, auth, project store
+├── script_engine/              # plan, editor agent, lip_sync, llm
+├── video_engine/               # merge, enhance, veo, render, …
+├── frontend/                   # Vite + React (landing + studio)
+│   ├── public/landing/         # Stitch showcase images
+│   └── src/Landing.tsx App.tsx …
+├── prompts/  references/  style_guide.json
+├── tests/  Dockerfile  docker-compose.yml
+└── projects/<id>/
+    ├── project.json            # includes owner_id when authenticated
+    ├── run_report.json
+    ├── raw_script.md  final_script.json
+    ├── raw_clips/  merged/  transcripts/  cuts/
+    ├── broll/  subtitles/  cover/  final/
+```
+
+```bash
+python -c "from core.project_store import create_project; print(create_project(name='my_reel').id)"
+```
+
+---
+
+## Environment variables
+
+Copy `.env.example` → `.env`. Highlights:
+
+| Variable | Notes |
+|----------|--------|
+| `GOOGLE_API_KEY` | Required for plan / Veo / cover |
+| `AUTH_MODE` / `AUTH_SECRET` | Multi-user auth |
+| `BROLL_USE_VEO` / `VEO_*` | B-roll generation |
+| `CORS_ORIGINS` | Vite origin(s) |
+| `RATE_LIMIT_*` | Per-user daily caps |
+| `AUDIO_PRESET` / `SPEAKER_VOLUME_DB` | Enhance + render |
+| `LANGFUSE_*` | Optional cost/latency traces |
+
+Full list: `.env.example`.
+
+---
+
+## Tests, CI, Docker
+
+```bash
+pytest tests/test_unit.py tests/test_editor_agent.py -q
+pytest tests/test_integration_enhance.py -q   # needs ffmpeg
+
+docker compose up --build                     # API on :8000, projects/ mounted
+```
+
+CI: `.github/workflows/ci.yml` runs unit + enhance integration tests on PR/push.
+
+---
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---------|------------|
+| `Project not found` | Create `projects/<name>/` or use `create_project` |
+| `No clips in raw_clips` | Add `.mp4` / `.mov` files |
+| Auth / Not Found on `/auth/*` | Run API on `:8000`; Vite proxy must include `/auth` |
+| Gemini `503` | Re-run `--from plan`; client retries + model fallbacks |
+| Veo `429` / quota | Wait / lower `VEO_MAX_CLIPS`; check AI Studio billing |
+| Veo `generate_audio` errors | Keep `VEO_GENERATE_AUDIO=0` on Developer API |
+| Empty B-roll | Check `broll/source_report.json` and `veo_prompts.log` |
+| Cover fails | Needs `final/reel.mp4` + `raw_script.md` + image model access |
+
+---
+
+## License / notes
+
+Local orchestration + product UI. API keys stay in `.env` (not committed). Cap Veo usage and use per-user rate limits when sharing keys across accounts.

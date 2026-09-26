@@ -4,6 +4,13 @@ Transcribe merged video with Whisper. Output word-level timestamps for filler de
 from pathlib import Path
 
 
+def resolve_video_for_transcribe(project_dir: Path) -> Path:
+    """Prefer enhanced audio merge when available."""
+    from .enhance import resolve_source_video
+
+    return resolve_source_video(project_dir)
+
+
 def transcribe(video_path: Path, model_size: str = "base") -> dict:
     """
     Return Whisper result dict with 'segments' (and optionally word-level).

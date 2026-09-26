@@ -1,9 +1,10 @@
 {
-  "visual_tone": "warm, grounded, real-life interiors with subtle mystical details (charts, sky motifs)",
-  "camera_style": "stable for A-roll; for B-roll use quick push-ins, handheld tracking, and over-shoulder shots inside real homes",
+  "visual_tone": "posh contemporary Indian home: marble or stone countertops, warm brass accents, curated furniture, soft natural light — lifestyle editorial, not mystical set design",
+  "camera_style": "stable for A-roll; for B-roll use quick push-ins, handheld tracking, and over-shoulder shots inside upscale Indian homes",
   "mood": "intimate, hopeful, gently confronting unhealed patterns without being harsh",
-  "color_palette": "warm tones, soft highlights, muted shadows, natural indoor lighting with occasional deep blues for astro moments",
-  "avoid": "no harsh lighting, no text overlays, no logos, no stock-photo feel, avoid generic forests/rivers/abstract glowing walls unless the script line explicitly calls for nature or that symbol",
+  "color_palette": "warm ivory walls, teak and walnut wood, soft gold accents, natural daylight, muted linen textiles",
+  "avoid": "no astrology symbols, zodiac wheels, birth charts, constellation overlays, glowing mystical props, harsh lighting, text overlays, logos, stock-photo feel, generic Western suburban kitsch unless the spoken line explicitly names a chart or sky symbol",
   "format": "vertical 9:16, must look like real video not a photograph, continuous but not floaty motion throughout",
-  "filler_clip": "Soft morning light over an open astrology chart and a mug on a kitchen table. Camera: gentle overhead push-in. Paper texture, a pen nearby, no people, no text."
+  "broll_casting": "Indian family, same look across cutaways: parent mid-30s and child about 5–8 years old, polished casual / elevated everyday Indian fashion (linen, soft neutrals, light jewellery on parent), filmed in a posh modern Indian apartment or villa interior (designer kitchen island, living room with art and plants), natural skin tones, no celebrity faces",
+  "filler_clip": "Soft morning light across a designer kitchen island with ceramic cups and fresh flowers in a posh Indian apartment. Camera: gentle overhead push-in. Marble texture, no people, no text, no astrology props."
 }

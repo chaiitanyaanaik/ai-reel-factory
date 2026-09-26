@@ -54,6 +54,8 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+
+
 def _audio_filter_chain(mute_expr: str | None = None) -> str:
     """
     Build FFmpeg audio filters for the speaker track.
@@ -131,9 +133,12 @@ def render_final(
     width: int = 1080,
     height: int = 1920,
 ) -> Path:
-    merged = project_dir / "merged" / "merged.mp4"
-    if not merged.exists():
-        raise FileNotFoundError(f"Merged video not found: {merged}")
+    from .enhance import resolve_source_video
+
+    try:
+        merged = resolve_source_video(project_dir)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Merged video not found: {e}") from e
 
     final_dir = project_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
@@ -309,39 +314,12 @@ def render_final(
                 )
                 current = out_label
 
-    # Step 5b: Optional burn-in captions (safe-zone only)
-    if _truthy_env("BURN_IN_CAPTIONS", "1"):
-        captions_path = project_dir / "subtitles" / "captions.srt"
-        if captions_path.exists():
-            try:
-                margin_v = int(float(os.environ.get("CAPTION_MARGIN_V", "80")))
-            except ValueError:
-                margin_v = 80
-            try:
-                font_size = int(float(os.environ.get("CAPTION_FONT_SIZE", "54")))
-            except ValueError:
-                font_size = 54
-
-            # Windows FFmpeg sometimes has issues with backslashes in filter args.
-            cap_path = str(captions_path).replace("\\", "/")
-            # FFmpeg subtitles filter parses ':' as an option separator (e.g. original_size).
-            # So we must escape the Windows drive colon: C:/... -> C\:/...
-            if len(cap_path) >= 2 and cap_path[1] == ":":
-                cap_path = cap_path[0] + "\\:" + cap_path[2:]
-            style = (
-                "Alignment=2,"  # bottom-center
-                f"MarginV={margin_v},"
-                f"Fontsize={font_size},"
-                "Outline=3,"
-                "BorderStyle=3,"
-                "Shadow=0,"
-                "BackColour=&H80000000"  # semi-transparent black
-            )
-            cap_out = "capout"
-            filter_parts.append(
-                f"[{current}]subtitles='{cap_path}':charenc=UTF-8:force_style='{style}'[{cap_out}]"
-            )
-            current = cap_out
+    # Captions burned in a second pass — nesting subtitles= inside filter_complex
+    # with force_style quotes reliably breaks FFmpeg's graph parser.
+    burn_captions = False
+    captions_path = project_dir / "subtitles" / "captions.srt"
+    if _truthy_env("BURN_IN_CAPTIONS", "1") and captions_path.exists():
+        burn_captions = True
 
     # Step 6: Speaker audio chain (denoise/EQ/dynamics/loudness/gain) + optional filler mutes
     filler_segs = [ov for ov in overlays if ov["mute"]]
@@ -356,9 +334,14 @@ def render_final(
         filter_parts.append(f"[0:a]{_audio_filter_chain()}[aout]")
         audio_map = "[aout]"
 
-    filter_complex = ";\n".join(filter_parts)
+    # Use ';' only — newlines inside filter_complex confuse some FFmpeg builds.
+    filter_complex = ";".join(filter_parts)
     if _truthy_env("RENDER_DEBUG_FILTERS", "0"):
         print(f"[DEBUG] filter_complex:\n{filter_complex}")
+
+    render_target = out_path
+    if burn_captions:
+        render_target = out_path.with_name("reel_pre_captions.mp4")
 
     cmd = ["ffmpeg", "-y"] + inputs + [
         "-filter_complex", filter_complex,
@@ -366,12 +349,56 @@ def render_final(
         "-map", audio_map,
         "-c:v", "libx264", "-preset", "fast",
         "-c:a", "aac",
-        str(out_path),
+        str(render_target),
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[DEBUG] FFmpeg stderr:\n{result.stderr[-2000:]}")
         result.check_returncode()
+
+    if burn_captions:
+        try:
+            margin_v = int(float(os.environ.get("CAPTION_MARGIN_V", "80")))
+        except ValueError:
+            margin_v = 80
+        try:
+            font_size = int(float(os.environ.get("CAPTION_FONT_SIZE", "54")))
+        except ValueError:
+            font_size = 54
+        style = (
+            f"Alignment=2,MarginV={margin_v},Fontsize={font_size},"
+            "Outline=3,BorderStyle=3,Shadow=0,BackColour=&H80000000"
+        )
+        # Resolve SRT via cwd + short filename so filter parsing stays simple.
+        vf = f"subtitles=captions.srt:charenc=UTF-8:force_style='{style}'"
+        cap_cmd = [
+            "ffmpeg", "-y", "-i", str(render_target.resolve()),
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "copy",
+            str(out_path.resolve()),
+        ]
+        cap_result = subprocess.run(
+            cap_cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(captions_path.parent.resolve()),
+        )
+        if cap_result.returncode != 0:
+            err = cap_result.stderr or ""
+            if "No such filter: 'subtitles'" in err or "Filter not found" in err:
+                print(
+                    "[WARN] This FFmpeg build has no subtitles/libass filter; "
+                    "skipping burn-in captions."
+                )
+            else:
+                print(f"[DEBUG] Caption burn-in stderr:\n{err[-1500:]}")
+                print("[WARN] Caption burn-in failed; wrote reel without burned-in subtitles.")
+            if out_path.exists():
+                out_path.unlink()
+            render_target.replace(out_path)
+        else:
+            render_target.unlink(missing_ok=True)
 
     return out_path

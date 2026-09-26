@@ -1,4 +1,4 @@
-# AI Reel Factory — local pipeline
+# AI Reel Factory — local pipeline + API
 # Python 3.10+
 
 # Transcription
@@ -13,7 +13,20 @@ google-genai>=1.10.0
 # Pexels stock video (free B-roll). Set PEXELS_API_KEY.
 requests>=2.28.0
 
-# Deterministic cover layout compositing (headline + speaker image).
+# Cover layout helpers
 Pillow>=10.0.0
 
-# FFmpeg must be installed on the system (merge + render)
+# Typed contracts + API
+pydantic>=2.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+PyJWT>=2.8.0
+
+# Observability (optional — enable with LANGFUSE_* keys)
+langfuse>=2.0.0
+
+# Tests
+pytest>=7.0.0
+
+# FFmpeg must be installed on the system (merge + enhance + render)

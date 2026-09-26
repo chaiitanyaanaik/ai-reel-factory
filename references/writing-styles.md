@@ -36,11 +36,12 @@ Choose a personality profile based on the content density.
 
 When implying visuals or examples in the script, prefer **literal, observable moments** over vague metaphors:
 
-*   Show real parents, kids, homes, and charts instead of generic forests, rivers, or glowing walls.
-*   Describe what actually happens ("A child copies their mom's tense shoulders at the table") instead of abstract feelings.
+*   Show real Indian parents, kids, and **posh home** interiors instead of generic forests, rivers, glowing walls, or astrology set dressing.
+*   Describe what actually happens ("A child copies their mom's tense shoulders at the kitchen island") instead of abstract feelings.
 *   Use specific locations and actions that a viewer can instantly picture.
+*   Astrology charts/symbols only when the spoken line names them.
 
-This keeps B-roll suggestions grounded in the real world of parenting + astrology and makes Veo prompts more reliable.
+This keeps B-roll suggestions grounded in urban Indian parenting moments and makes Veo prompts more reliable.
 
 ---
 

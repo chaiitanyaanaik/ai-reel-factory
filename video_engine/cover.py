@@ -208,7 +208,7 @@ def _describe_reference_frame(frame_path: Path) -> str:
         raise ValueError("Set GOOGLE_API_KEY or GEMINI_API_KEY before running cover generation.")
 
     client = genai.Client(api_key=api_key)
-    model = os.environ.get("COVER_VISION_MODEL", os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"))
+    model = os.environ.get("COVER_VISION_MODEL", os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview"))
     img_bytes = frame_path.read_bytes()
     prompt = (
         "Describe this person/frame for recreating an Instagram cover image. "

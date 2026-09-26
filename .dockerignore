@@ -1,0 +1,31 @@
+# Secrets — never bake into images
+.env
+.env.*
+!.env.example
+
+# Git / IDE
+.git
+.gitignore
+.cursor
+.vscode
+.idea
+
+# Python junk
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+*.egg-info
+dist
+build
+
+# Frontend (API image does not need these)
+frontend/node_modules
+frontend/dist
+
+# Runtime / generated data (mounted at run time)
+projects
+
+# Local noise
+.DS_Store

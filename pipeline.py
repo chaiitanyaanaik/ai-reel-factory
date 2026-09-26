@@ -1,28 +1,68 @@
 """
 AI Reel Factory — main workflow orchestrator.
 
-Runs locally; each stage is modular and can be replaced or skipped.
-Optional: USE_FILLER_BROLL=1 for um/ah B-roll overlay + mute (off by default).
-"""
-from pathlib import Path
-import argparse
-import sys
+Default mode: video_first
+  merge → enhance → transcribe → plan → align → broll → subtitles → render → cover
 
-# Project root — ensure imports work when run from any directory
+Teleprompter mode: script first (topic → Gemini), then same video chain after clips exist.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+import uuid
+from pathlib import Path
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from core.config import load_env
+from core.project_store import (
+    ensure_manifest,
+    get_project_dir,
+    list_artifacts,
+    save_run_report,
+    update_manifest,
+)
+from schemas.models import (
+    JobStatus,
+    PipelineMode,
+    RunReport,
+    StageResult,
+    utc_now,
+)
 
-def get_project_dir(name: str) -> Path:
-    p = ROOT / "projects" / name
-    if not p.is_dir():
-        raise FileNotFoundError(f"Project not found: {p}")
-    return p
+
+VIDEO_FIRST_ORDER = [
+    "merge",
+    "enhance",
+    "transcribe",
+    "plan",
+    "align",
+    "broll",
+    "subtitles",
+    "render",
+    "cover",
+]
+
+TELEPROMPTER_ORDER = [
+    "script",
+    "merge",
+    "enhance",
+    "transcribe",
+    "align",
+    "broll",
+    "subtitles",
+    "render",
+    "cover",
+]
 
 
 def run_script_stage(project_dir: Path) -> None:
-    """1. Read topic -> generate script -> editing plan."""
+    """Teleprompter: topic → script + editing plan (invented dialogue — record after)."""
     topic_path = project_dir / "topic.txt"
     if not topic_path.exists():
         raise FileNotFoundError(f"Add topic: {topic_path}")
@@ -35,42 +75,61 @@ def run_script_stage(project_dir: Path) -> None:
     (project_dir / "raw_script.md").write_text(raw_script, encoding="utf-8")
     plan = script_to_editing_plan(raw_script, project_dir=project_dir)
     save_editing_plan(project_dir, plan)
-    print("[OK] Script + editing plan")
+    print("[OK] Script + editing plan (teleprompter)")
 
 
 def run_merge_stage(project_dir: Path) -> Path:
-    """2. Merge raw_clips -> merged/merged.mp4."""
     from video_engine.merge_clips import merge_clips
+
     path = merge_clips(project_dir)
     print(f"[OK] Merged -> {path}")
     return path
 
 
+def run_enhance_stage(project_dir: Path) -> Path:
+    from video_engine.enhance import enhance_audio
+
+    path = enhance_audio(project_dir)
+    print(f"[OK] Enhanced audio -> {path}")
+    return path
+
+
 def run_transcribe_stage(project_dir: Path) -> Path:
-    """3. Whisper on merged video -> transcripts/transcript.json."""
-    merged = project_dir / "merged" / "merged.mp4"
-    if not merged.exists():
-        raise FileNotFoundError(f"Run merge first: {merged}")
-    from video_engine.transcribe import transcribe, save_transcript
-    data = transcribe(merged)
+    from video_engine.enhance import resolve_source_video
+    from video_engine.transcribe import save_transcript, transcribe
+
+    video = resolve_source_video(project_dir)
+    data = transcribe(video)
     path = save_transcript(project_dir, data)
     print(f"[OK] Transcript -> {path}")
     return path
 
 
+def run_plan_stage(project_dir: Path) -> None:
+    """Video-first: plan from transcript (lip-sync safe)."""
+    from script_engine.plan_from_transcript import run_plan_stage as _plan
+
+    _plan(project_dir)
+
+
 def run_filler_stage(project_dir: Path) -> Path:
-    """4. Filler detection -> cuts/filler_segments.json (for B-roll + mute)."""
-    from video_engine.filler_detection import load_transcript, get_filler_segments, save_filler_segments
+    """Deprecated: um/ah detection for optional mute overlays."""
+    from video_engine.filler_detection import (
+        get_filler_segments,
+        load_transcript,
+        save_filler_segments,
+    )
+
     transcript = load_transcript(project_dir)
     segments = get_filler_segments(transcript)
     path = save_filler_segments(project_dir, segments)
-    print(f"[OK] Filler segments -> {path} ({len(segments)} segments)")
+    print(f"[OK] Filler segments -> {path} ({len(segments)} segments) [deprecated]")
     return path
 
 
 def run_align_stage(project_dir: Path) -> Path:
-    """4. Align editing plan to transcript -> cuts/timeline.json (optional fillers via USE_FILLER_BROLL=1)."""
     from video_engine.timeline import build_timeline_with_fillers, save_timeline
+
     timeline, filler_ranges = build_timeline_with_fillers(project_dir)
     path = save_timeline(project_dir, timeline, filler_ranges)
     print(f"[OK] Timeline -> {path} ({len(timeline)} segments)")
@@ -78,36 +137,43 @@ def run_align_stage(project_dir: Path) -> Path:
 
 
 def run_broll_stage(project_dir: Path) -> None:
-    """5. Source B-roll clips: Pexels (free) first, Veo fallback. Respects env toggles."""
-    from video_engine.broll import generate_broll_from_timeline, prepare_broll_placeholders
-    try:
-        generate_broll_from_timeline(project_dir)
-        print("[OK] B-roll sourced")
-    except Exception as e:
-        print(f"[ERROR] B-roll generation failed: {e}")
-        prepare_broll_placeholders(project_dir)
-        print("[SKIP] B-roll: using placeholders. Reel will still render.")
+    from video_engine.broll import generate_broll_from_timeline
+
+    report = generate_broll_from_timeline(project_dir)
+    planned = [r for r in report if str(r.broll_index) != "filler"]
+    sourced = sum(1 for r in planned if r.source in ("veo", "pexels", "reuse"))
+    if planned and sourced == 0:
+        details = " ".join((r.detail or "") for r in planned)
+        if "429" in details or "quota" in details.lower() or "RESOURCE_EXHAUSTED" in details:
+            raise RuntimeError(
+                "B-roll failed: Google Veo quota exhausted (429). "
+                "Check billing/rate limits at https://ai.dev/rate-limit, then retry."
+            )
+        raise RuntimeError(
+            "B-roll failed: no clips were sourced. Check Veo settings and retry."
+        )
+    print(f"[OK] B-roll sourced ({len(report)} entries, {sourced} clips)")
 
 
 def run_subtitles_stage(project_dir: Path) -> Path:
-    """6. Generate subtitles from transcript (fillers stripped in captions)."""
     from video_engine.subtitles import generate_srt
+
     path = generate_srt(project_dir, strip_fillers=True)
     print(f"[OK] Subtitles -> {path}")
     return path
 
 
 def run_render_stage(project_dir: Path) -> Path:
-    """7. Final reel: A/B-roll overlays, boosted speaker audio, 1080x1920 -> final/reel.mp4."""
     from video_engine.render import render_final
+
     path = render_final(project_dir, width=1080, height=1920)
     print(f"[OK] Final reel -> {path}")
     return path
 
 
 def run_cover_stage(project_dir: Path) -> Path:
-    """8. Generate AI cover image from rendered reel + script artifacts."""
     from video_engine.cover import generate_cover_from_reel
+
     path = generate_cover_from_reel(project_dir)
     print(f"[OK] Cover -> {path}")
     return path
@@ -116,7 +182,9 @@ def run_cover_stage(project_dir: Path) -> Path:
 STAGES = {
     "script": run_script_stage,
     "merge": run_merge_stage,
+    "enhance": run_enhance_stage,
     "transcribe": run_transcribe_stage,
+    "plan": run_plan_stage,
     "filler": run_filler_stage,
     "align": run_align_stage,
     "broll": run_broll_stage,
@@ -126,36 +194,196 @@ STAGES = {
 }
 
 
-def run_pipeline(project_name: str, from_stage: str | None = None, to_stage: str | None = None) -> None:
-    order = ["script", "merge", "transcribe", "align", "broll", "subtitles", "render", "cover"]
+def stage_order_for_mode(mode: PipelineMode | str) -> list[str]:
+    if isinstance(mode, str):
+        mode = PipelineMode(mode)
+    if mode == PipelineMode.teleprompter:
+        return list(TELEPROMPTER_ORDER)
+    return list(VIDEO_FIRST_ORDER)
+
+
+def _load_broll_report(project_dir: Path) -> list:
+    import json
+
+    from schemas.models import BrollSourceEntry
+
+    path = project_dir / "broll" / "source_report.json"
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return [BrollSourceEntry.model_validate(x) for x in raw]
+
+
+def run_pipeline(
+    project_name: str,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+    mode: PipelineMode | str | None = None,
+    job_id: str | None = None,
+    *,
+    user_id: str | None = None,
+    user_email: str | None = None,
+) -> RunReport:
+    load_env()
+    from core.tracing import clear_trace_context, flush, observe, set_trace_context
+
+    project_dir = get_project_dir(project_name)
+    ensure_manifest(project_dir)
+
+    if mode is None:
+        manifest = ensure_manifest(project_dir)
+        mode = manifest.mode
+    if isinstance(mode, str):
+        mode = PipelineMode(mode)
+
+    order = stage_order_for_mode(mode)
     if from_stage:
         try:
             start = order.index(from_stage)
         except ValueError:
-            print(f"Unknown stage: {from_stage}. Use: {order}")
-            sys.exit(1)
+            raise ValueError(f"Unknown stage for mode {mode.value}: {from_stage}. Use: {order}")
     else:
         start = 0
     if to_stage:
         try:
             end = order.index(to_stage) + 1
         except ValueError:
-            print(f"Unknown stage: {to_stage}. Use: {order}")
-            sys.exit(1)
+            raise ValueError(f"Unknown stage for mode {mode.value}: {to_stage}. Use: {order}")
     else:
         end = len(order)
-    project_dir = get_project_dir(project_name)
-    for name in order[start:end]:
-        STAGES[name](project_dir)
+
+    job_id = job_id or uuid.uuid4().hex[:12]
+    manifest = ensure_manifest(project_dir)
+    set_trace_context(
+        user_id=user_id or manifest.owner_id,
+        user_email=user_email,
+        project_id=project_name,
+        job_id=job_id,
+    )
+
+    report = RunReport(
+        project_id=project_name,
+        mode=mode,
+        job_id=job_id,
+        started_at=utc_now(),
+        status=JobStatus.running,
+        models={
+            "gemini": os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+            "veo": os.environ.get("VEO_MODEL", "veo-3.1-lite-generate-preview"),
+            "veo_resolution": os.environ.get("VEO_RESOLUTION", "720p"),
+            "veo_duration": os.environ.get("VEO_DURATION_SECONDS", "4"),
+        },
+        veo_max_clips=int(os.environ.get("VEO_MAX_CLIPS", "5") or 5),
+    )
+    update_manifest(
+        project_dir,
+        status=JobStatus.running,
+        mode=mode,
+        last_job_id=job_id,
+        current_stage=order[start] if start < end else None,
+        error=None,
+    )
+    save_run_report(project_dir, report)
+
+    try:
+        with observe(
+            "pipeline.run",
+            as_type="span",
+            input={
+                "from_stage": from_stage,
+                "to_stage": to_stage,
+                "mode": mode.value,
+            },
+            metadata={"project_id": project_name, "job_id": job_id},
+        ):
+            for name in order[start:end]:
+                update_manifest(project_dir, current_stage=name)
+                t0 = time.monotonic()
+                started = utc_now()
+                try:
+                    with observe(f"stage.{name}", as_type="span", metadata={"stage": name}):
+                        STAGES[name](project_dir)
+                    dur = time.monotonic() - t0
+                    report.stages.append(
+                        StageResult(
+                            name=name,
+                            status="ok",
+                            started_at=started,
+                            finished_at=utc_now(),
+                            duration_seconds=round(dur, 3),
+                        )
+                    )
+                except Exception as e:
+                    dur = time.monotonic() - t0
+                    report.stages.append(
+                        StageResult(
+                            name=name,
+                            status="failed",
+                            started_at=started,
+                            finished_at=utc_now(),
+                            duration_seconds=round(dur, 3),
+                            error=str(e),
+                        )
+                    )
+                    report.errors.append(f"{name}: {e}")
+                    report.status = JobStatus.failed
+                    report.finished_at = utc_now()
+                    report.broll = _load_broll_report(project_dir)
+                    report.veo_clips_used = sum(1 for b in report.broll if b.source == "veo")
+                    report.artifacts = list_artifacts(project_dir)
+                    save_run_report(project_dir, report)
+                    update_manifest(
+                        project_dir,
+                        status=JobStatus.failed,
+                        current_stage=name,
+                        error=str(e),
+                        artifacts=report.artifacts,
+                    )
+                    raise
+
+            report.status = JobStatus.completed
+            report.finished_at = utc_now()
+            report.broll = _load_broll_report(project_dir)
+            report.veo_clips_used = sum(1 for b in report.broll if b.source == "veo")
+            report.artifacts = list_artifacts(project_dir)
+            save_run_report(project_dir, report)
+            update_manifest(
+                project_dir,
+                status=JobStatus.completed,
+                current_stage=None,
+                artifacts=report.artifacts,
+                error=None,
+            )
+            return report
+    finally:
+        flush()
+        clear_trace_context()
 
 
-def main():
+def main() -> None:
+    load_env()
     ap = argparse.ArgumentParser(description="AI Reel Factory pipeline")
-    ap.add_argument("project", nargs="?", default="project_001", help="Project folder name under projects/")
+    ap.add_argument(
+        "project",
+        nargs="?",
+        default="project_001",
+        help="Project folder name under projects/",
+    )
     ap.add_argument("--from", dest="from_stage", metavar="STAGE", help="Start from this stage")
     ap.add_argument("--to", dest="to_stage", metavar="STAGE", help="Stop after this stage")
+    ap.add_argument(
+        "--mode",
+        choices=["video_first", "teleprompter"],
+        default=None,
+        help="Pipeline mode (default: project.json or video_first)",
+    )
     args = ap.parse_args()
-    run_pipeline(args.project, args.from_stage, args.to_stage)
+    mode = PipelineMode(args.mode) if args.mode else None
+    try:
+        run_pipeline(args.project, args.from_stage, args.to_stage, mode=mode)
+    except Exception as e:
+        print(f"[FAIL] {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
