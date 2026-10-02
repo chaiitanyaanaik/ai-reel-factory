@@ -44,6 +44,7 @@ from schemas.models import (
     AuthLoginRequest,
     AuthTokenResponse,
     AuthUser,
+    BrandProfile,
     BrollEditRequest,
     JobRequest,
     ProjectCreate,
@@ -123,6 +124,26 @@ def auth_usage(user: Annotated[CurrentUser, Depends(get_current_user)]):
 @app.get("/auth/me", response_model=AuthUser)
 def auth_me(user: Annotated[CurrentUser, Depends(get_current_user)]):
     return AuthUser(id=user.id, email=user.email, name=user.name)
+
+
+@app.get("/auth/brand", response_model=BrandProfile)
+def auth_get_brand(user: Annotated[CurrentUser, Depends(get_current_user)]):
+    from core.user_brand import load_user_brand
+
+    return load_user_brand(user.id)
+
+
+@app.put("/auth/brand", response_model=BrandProfile)
+def auth_put_brand(
+    body: BrandProfile,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    from core.user_brand import save_user_brand
+
+    try:
+        return save_user_brand(user.id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.get("/auth/media-token")
@@ -356,14 +377,18 @@ def api_list_broll(
     from video_engine.broll_meta import list_broll_metas
 
     metas = list_broll_metas(project_dir)
+    from video_engine.broll_meta import clip_path
+
     return {
         "project_id": project_id,
         "broll": [
             {
                 **m.model_dump(mode="json"),
-                "video_url": f"/projects/{project_id}/broll/{int(m.broll_index)}/video"
-                if m.path
-                else None,
+                "video_url": (
+                    f"/projects/{project_id}/broll/{int(m.broll_index)}/video"
+                    if clip_path(project_dir, int(m.broll_index)).exists()
+                    else None
+                ),
             }
             for m in metas
         ],

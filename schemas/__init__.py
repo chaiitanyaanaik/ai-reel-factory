@@ -1,6 +1,8 @@
 """Typed contracts for projects, jobs, timelines, and run reports."""
 from .models import (
+    AuthUser,
     Beat,
+    BrandProfile,
     BrollSourceEntry,
     EditingPlan,
     JobRequest,
@@ -15,7 +17,9 @@ from .models import (
 )
 
 __all__ = [
+    "AuthUser",
     "Beat",
+    "BrandProfile",
     "BrollSourceEntry",
     "EditingPlan",
     "JobRequest",

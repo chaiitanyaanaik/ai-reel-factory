@@ -181,29 +181,26 @@ def gemini_json(
     return json.loads(text.strip())
 
 
-def load_style_guide(project_dir: Path | None = None) -> dict:
-    """Load style guide -- project-level overrides global default."""
-    guide = {}
-    global_path = ROOT / "style_guide.json"
-    if global_path.exists():
-        guide = json.loads(global_path.read_text(encoding="utf-8"))
-    if project_dir:
-        project_path = project_dir / "style_guide.json"
-        if project_path.exists():
-            guide.update(json.loads(project_path.read_text(encoding="utf-8")))
-    return guide
+def load_style_guide(
+    project_dir: Path | None = None,
+    *,
+    user_id: str | None = None,
+) -> dict:
+    """Load style guide: global → user brand → optional project override."""
+    from core.user_brand import load_merged_style_guide
+
+    return load_merged_style_guide(project_dir, user_id=user_id)
 
 
-def style_guide_text(project_dir: Path | None = None) -> str:
+def style_guide_text(
+    project_dir: Path | None = None,
+    *,
+    user_id: str | None = None,
+) -> str:
     """Return style guide as a readable string for LLM prompts."""
-    guide = load_style_guide(project_dir)
-    if not guide:
-        return ""
-    lines = ["## Style Guide"]
-    for key, val in guide.items():
-        if key != "filler_clip":
-            lines.append(f"- {key.replace('_', ' ').title()}: {val}")
-    return "\n".join(lines)
+    from core.user_brand import style_guide_text as _style_text
+
+    return _style_text(project_dir, user_id=user_id)
 
 
 def load_references(*names: str) -> str:

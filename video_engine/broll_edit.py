@@ -11,6 +11,8 @@ from video_engine import broll_meta
 from video_engine.broll import _veo_clip_seconds
 from video_engine.veo_client import generate_video
 
+CATEGORY_REGENERATE = "broll_regenerate"
+
 
 def _format_chat_history(meta: BrollClipMeta) -> str:
     if not meta.chat:
@@ -80,11 +82,20 @@ def edit_broll_clip(
             path=video.name,
         )
 
+    prior_prompt = (meta.full_prompt or meta.suggestion or "")[:800]
+    next_version = len(meta.versions) + 1
+
     with observe(
-        "broll.edit",
+        "broll.regenerate",
         as_type="span",
         input={"broll_index": idx, "message": message},
-        metadata={"broll_index": idx},
+        metadata={
+            "broll_index": idx,
+            "category": CATEGORY_REGENERATE,
+            "operation": "regenerate",
+            "version": next_version,
+            "prior_prompt": prior_prompt,
+        },
     ) as span:
         keyframe = project_dir / "broll" / f"{idx:03d}.keyframe.jpg"
         try:
@@ -128,8 +139,17 @@ def edit_broll_clip(
             keyframe_path=keyframe.name if keyframe and Path(keyframe).exists() else None,
         )
         span.update(
-            output={"path": updated.path, "versions": len(updated.versions)},
-            metadata={"used_image": result.used_image, "latency_ms": result.latency_ms},
+            output={
+                "path": updated.path,
+                "versions": len(updated.versions),
+                "new_prompt": (result.full_prompt or "")[:800],
+            },
+            metadata={
+                "category": CATEGORY_REGENERATE,
+                "used_image": result.used_image,
+                "latency_ms": result.latency_ms,
+                "version": len(updated.versions),
+            },
             cost_usd=result.estimated_cost_usd,
         )
         return updated

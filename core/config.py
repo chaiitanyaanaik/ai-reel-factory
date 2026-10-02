@@ -7,19 +7,37 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def environment_name() -> str:
+    """Environment name (host may set ENVIRONMENT before dotenv runs)."""
+    return (os.environ.get("ENVIRONMENT") or os.environ.get("ENV") or "development").strip().lower()
+
+
+def is_production_env() -> bool:
+    return environment_name() in ("production", "prod")
+
+
 def load_env(*, force: bool = False) -> None:
     """
-    Load project-root .env into os.environ.
+    Load local dotenv files into os.environ.
 
-    Always re-reads .env with override so local config changes apply without
-    restarting long-lived API workers (still fine for production if .env is static).
+    Best practice:
+    - Process / host / CI env always wins (dotenv never overwrites existing keys).
+    - Local: `.env` fills gaps; optional `.env.local` may override for personal tweaks.
+    - Production: same fill-gaps rule — inject secrets on the host; do not commit them.
+
+    Restart the API after editing `.env` (values already in the process are not replaced).
     """
     try:
         from dotenv import load_dotenv
-
-        load_dotenv(ROOT / ".env", override=True)
     except ImportError:
-        pass
+        return
+
+    # Host/CI first: never clobber variables already set in the process.
+    load_dotenv(ROOT / ".env", override=False)
+
+    if not is_production_env():
+        # Personal overrides (gitignored) — allowed to win over `.env` only.
+        load_dotenv(ROOT / ".env.local", override=True)
 
 
 def allow_placeholders() -> bool:

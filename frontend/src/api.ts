@@ -11,6 +11,21 @@ export type AuthUser = {
   name?: string | null;
 };
 
+export type BrandProfile = {
+  niche?: string | null;
+  audience?: string | null;
+  visual_tone?: string | null;
+  mood?: string | null;
+  color_palette?: string | null;
+  camera_style?: string | null;
+  setting?: string | null;
+  visual_world?: string | null;
+  broll_casting?: string | null;
+  avoid?: string | null;
+  filler_clip?: string | null;
+  format?: string | null;
+};
+
 type TokenProvider = () => Promise<string | null>;
 
 let tokenProvider: TokenProvider | null = null;
@@ -110,19 +125,56 @@ export function clearSession() {
   localStorage.removeItem(MEDIA_TOKEN_EXP_KEY);
 }
 
+/** True for stale email-login JWTs — not Clerk RS256, and not short-lived media tokens. */
+export function isLegacyReelkutToken(token: string | null | undefined): boolean {
+  if (!token) return false;
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return false;
+    const payloadJson = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
+    const payload = JSON.parse(payloadJson) as { iss?: string; typ?: string };
+    if (payload.typ === "media" || payload.iss === "reelkut-media") return false;
+    return payload.iss === "reelkut-dev";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Drop stale email-login tokens so they are never sent as Bearer under Clerk.
+ * (Those JWTs have no `kid` → API error: Unable to find a signing key that matches "None".)
+ */
+export function purgeLegacyAuthArtifacts() {
+  const stored = getStoredToken();
+  if (isLegacyReelkutToken(stored)) {
+    clearSession();
+  }
+  if (isLegacyReelkutToken(memoryToken)) {
+    memoryToken = null;
+  }
+}
+
 async function resolveToken(): Promise<string | null> {
   if (tokenProvider) {
     try {
       const t = await tokenProvider();
       if (t) {
-        memoryToken = t;
-        return t;
+        // Never keep a legacy HS256 token once Clerk is providing sessions.
+        if (!isLegacyReelkutToken(t)) {
+          memoryToken = t;
+          return t;
+        }
       }
     } catch {
       /* fall through */
     }
   }
-  return getStoredToken();
+  const stored = getStoredToken();
+  if (isLegacyReelkutToken(stored)) {
+    clearSession();
+    return null;
+  }
+  return stored;
 }
 
 function authHeaders(extra?: HeadersInit): HeadersInit {
@@ -142,6 +194,47 @@ export function withAccessToken(url: string): string {
   if (!token) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}access_token=${encodeURIComponent(token)}`;
+}
+
+/** Await a media token, then return a playable URL (for &lt;video src&gt;). */
+export async function authenticatedUrl(path: string): Promise<string> {
+  await ensureMediaToken();
+  const token = getCachedMediaToken() || (await resolveToken());
+  if (!token) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}access_token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Fetch media with Authorization and return a blob: URL.
+ * More reliable than &lt;video src="...?access_token="&gt; under Clerk.
+ * Caller must revokeObjectURL when done.
+ */
+export async function fetchMediaObjectUrl(path: string): Promise<string> {
+  const res = await apiFetch(path);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  const blob = await res.blob();
+  if (!blob.size) {
+    throw new Error("Empty media response");
+  }
+  return URL.createObjectURL(blob);
+}
+
+/** Download an authenticated artifact (works under Clerk). */
+export async function downloadAuthenticated(path: string, filename: string): Promise<void> {
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error(await parseError(res));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function getCachedMediaToken(): string | null {
@@ -232,6 +325,22 @@ export async function fetchMe(): Promise<AuthUser | null> {
   return user;
 }
 
+export async function getBrand(): Promise<BrandProfile> {
+  const res = await apiFetch("/auth/brand");
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as BrandProfile;
+}
+
+export async function saveBrand(brand: BrandProfile): Promise<BrandProfile> {
+  const res = await apiFetch("/auth/brand", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(brand),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as BrandProfile;
+}
+
 export async function listProjects(): Promise<ProjectSummary[]> {
   const res = await apiFetch("/projects");
   if (!res.ok) throw new Error(await parseError(res));
@@ -314,6 +423,44 @@ export function artifactUrl(id: string, name: "reel" | "cover" | "script") {
 
 export function clipUrl(id: string, filename: string) {
   return withAccessToken(`/projects/${id}/clips/${filename}`);
+}
+
+export type BrollClip = {
+  broll_index: number;
+  suggestion?: string | null;
+  spoken_text?: string | null;
+  full_prompt?: string | null;
+  source?: string | null;
+  path?: string | null;
+  detail?: string | null;
+  video_url?: string | null;
+  chat?: { role: string; content: string }[];
+  versions?: unknown[];
+};
+
+export async function listBroll(projectId: string): Promise<BrollClip[]> {
+  const res = await apiFetch(`/projects/${projectId}/broll`);
+  if (!res.ok) throw new Error(await parseError(res));
+  const data = await res.json();
+  return (data.broll ?? []) as BrollClip[];
+}
+
+export async function editBroll(
+  projectId: string,
+  index: number,
+  message: string
+): Promise<BrollClip> {
+  const res = await apiFetch(`/projects/${projectId}/broll/${index}/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export function brollVideoUrl(projectId: string, index: number) {
+  return withAccessToken(`/projects/${projectId}/broll/${index}/video`);
 }
 
 export async function pollJobUntilDone(

@@ -58,16 +58,35 @@ cp .env.example .env          # fill in keys
 
 ## Quick start (UI)
 
-```bash
-# Terminal 1 — API
-uvicorn api.main:app --host 127.0.0.1 --port 8000
+### Auth with Clerk (recommended)
 
-# Terminal 2 — UI
-cd frontend && npm install && npm run dev
-# → http://127.0.0.1:5173
+1. Create an application at [Clerk](https://clerk.com/) (or use an existing one).
+2. **Backend** — copy `.env.example` → `.env` and set:
+   - `AUTH_MODE=clerk`
+   - `CLERK_ISSUER` — Clerk Dashboard → **Configure → API Keys → Frontend API URL** (e.g. `https://foo-bar-12.clerk.accounts.dev`)
+   - `AUTH_SECRET` — `openssl rand -hex 32` (used for short-lived media tokens, not Clerk login)
+   - `GOOGLE_API_KEY` and other pipeline keys
+3. **Frontend** — copy `frontend/.env.example` → `frontend/.env` and set `VITE_CLERK_PUBLISHABLE_KEY=pk_test_...` from the same API Keys page.
+4. In Clerk → **Paths**, allow your dev origin (`http://127.0.0.1:5173` and/or `http://localhost:5173`).
+
+From the repo root (Python venv + deps installed; see [Requirements](#requirements)):
+
+```bash
+npm install
+npm run dev
+# API → http://127.0.0.1:8000  |  UI → http://127.0.0.1:5173
 ```
 
-1. Open the **landing** → sign in with email (dev auth)  
+The UI uses Clerk sign-in; the API validates the Clerk session JWT on each request. Without `VITE_CLERK_PUBLISHABLE_KEY`, the app falls back to **dev email login** (`AUTH_MODE=dev` on the API).
+
+Or run API and UI in separate terminals:
+
+```bash
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+cd frontend && npm run dev
+```
+
+1. Open the **landing** → **Sign in** (Clerk) or email (dev auth only)  
 2. **Library** — create a project or open a past reel  
 3. **Upload** — add clips, reorder with ↑↓, upload  
 4. **Extract script** — merge → enhance → transcribe → editor plan  
@@ -169,7 +188,7 @@ Frontend optional Clerk: set `VITE_CLERK_PUBLISHABLE_KEY` in `frontend/.env` (se
 
 1. `ENVIRONMENT=production` — blocks `AUTH_MODE=dev` / `off` and weak `AUTH_SECRET`
 2. `AUTH_MODE=clerk` + Clerk on the frontend; never expose provider keys to the browser
-3. Secrets via host env / secret manager (`.dockerignore` keeps `.env` out of images)
+3. Secrets via host / secret manager (never commit `.env`; `.dockerignore` keeps `.env` out of images)
 4. One **prod** Google key + one **staging** key; enable billing + budget alerts
 5. Per-user caps: `RATE_LIMIT_PROJECTS_PER_DAY`, `RATE_LIMIT_JOBS_PER_DAY`, `RATE_LIMIT_BROLL_EDITS_PER_DAY`
 6. `COOKIE_SECURE=1` on HTTPS; `CORS_ORIGINS` = real frontend only
@@ -188,6 +207,8 @@ Frontend optional Clerk: set `VITE_CLERK_PUBLISHABLE_KEY` in `frontend/.env` (se
 | `GET` | `/auth/me` | Current user |
 | `GET` | `/auth/media-token` | Short-lived token for media URLs |
 | `GET` | `/auth/usage` | Per-user daily rate-limit counters |
+| `GET` | `/auth/brand` | Per-user brand / visual world |
+| `PUT` | `/auth/brand` | Upsert brand (niche, casting, setting, …) |
 | `POST` | `/auth/logout` | Clear cookie |
 | `GET` | `/projects` | List **your** projects |
 | `POST` | `/projects` | Create project |
@@ -232,11 +253,11 @@ Interactive docs: http://127.0.0.1:8000/docs
 | `VEO_RESOLUTION` | `720p` |
 | `VEO_GENERATE_AUDIO` | `0` (Developer API; B-roll is muted in render) |
 | `VEO_MAX_CLIPS` | `5` |
+| `VEO_PARALLELISM` | `3` (concurrent Veo jobs) |
 
-Prompts include the **spoken line** for the beat plus casting/style from `style_guide.json`. Optional: `VEO_EXPAND_PROMPT`, `VEO_LOG_PROMPTS`.
+Prompts include the **spoken line** for the beat plus casting/style from the **per-user brand** (Studio → Brand) merged with craft-only `style_guide.json`. Optional project `style_guide.json` override. Optional: `VEO_EXPAND_PROMPT`, `VEO_LOG_PROMPTS`.
 
-Priority per segment: reuse existing file → Veo → skip (keep A-roll). Set `BROLL_VEO_ONLY=0` and add `PEXELS_API_KEY` to prefer stock.
-
+Priority per segment: reuse existing file → Veo → skip (keep A-roll). Pexels is skipped while `BROLL_VEO_ONLY=1`. Studio: ⋮ → Edit regenerates one clip (`broll_regenerate` in Langfuse); **Update reel** re-renders with current files.
 ---
 
 ## Render effects
@@ -262,7 +283,7 @@ ai-reel-factory/
 ├── frontend/                   # Vite + React (landing + studio)
 │   ├── public/landing/         # Stitch showcase images
 │   └── src/Landing.tsx App.tsx …
-├── prompts/  references/  style_guide.json
+├── prompts/  references/  style_guide.json   # craft-only; niche in per-user brand
 ├── tests/  Dockerfile  docker-compose.yml
 └── projects/<id>/
     ├── project.json            # includes owner_id when authenticated
@@ -278,22 +299,47 @@ python -c "from core.project_store import create_project; print(create_project(n
 
 ---
 
-## Environment variables
+## Environment configuration (best practice)
 
-Copy `.env.example` → `.env`. Highlights:
+| What | Where | Git |
+|------|--------|-----|
+| Template (names + comments, no secrets) | [`.env.example`](.env.example), [`frontend/.env.example`](frontend/.env.example) | committed |
+| Local secrets | `.env` (+ optional `.env.local`) | **gitignored** |
+| Frontend local | `frontend/.env` (Vite also reads `.env.development*`) | **gitignored** |
+| Production secrets | Host / secret manager / CI variables | never in git |
+
+**Local**
+
+```bash
+cp .env.example .env                 # set ENVIRONMENT=development, Clerk test keys, Google key
+cp frontend/.env.example frontend/.env   # VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
+# optional personal overrides (also gitignored):
+#   echo 'GOOGLE_API_KEY=...' >> .env.local
+```
+
+**Production**
+
+- Set the **same variable names** on the platform (`ENVIRONMENT=production`, `AUTH_MODE=clerk`, strong `AUTH_SECRET`, prod `CLERK_ISSUER`, prod Google key, real `CORS_ORIGINS`, `COOKIE_SECURE=1`).
+- Frontend build: inject `VITE_CLERK_PUBLISHABLE_KEY=pk_live_...` in CI — do not commit it.
+- Prefer a **separate** Google key and Clerk app/instance from local.
+- API `load_env()` never overwrites variables already set by the host/CI/shell. Local `.env` fills gaps; optional `.env.local` can override for personal tweaks. Restart the API after changing `.env`.
+
+Do **not** commit `.env.production` with live keys. Docker Compose `env_file: .env` is for local/shared lab only; real deploys should inject env at runtime (image never contains `.env`).
+
+### Environment variables
+
+Highlights (full list in `.env.example`):
 
 | Variable | Notes |
 |----------|--------|
+| `ENVIRONMENT` | `development` (local) / `production` (host) |
 | `GOOGLE_API_KEY` | Required for plan / Veo / cover |
-| `AUTH_MODE` / `AUTH_SECRET` | Multi-user auth |
+| `AUTH_MODE` / `AUTH_SECRET` / `CLERK_ISSUER` | Clerk (recommended) |
 | `BROLL_USE_VEO` / `VEO_*` | B-roll generation |
-| `CORS_ORIGINS` | Vite origin(s) |
+| `CORS_ORIGINS` | Frontend origin(s) |
 | `RATE_LIMIT_*` | Per-user daily caps |
 | `AUDIO_PRESET` / `SPEAKER_VOLUME_DB` | Enhance + render |
 | `LANGFUSE_*` | Optional cost/latency traces |
-
-Full list: `.env.example`.
-
 ---
 
 ## Tests, CI, Docker
@@ -326,4 +372,4 @@ CI: `.github/workflows/ci.yml` runs unit + enhance integration tests on PR/push.
 
 ## License / notes
 
-Local orchestration + product UI. API keys stay in `.env` (not committed). Cap Veo usage and use per-user rate limits when sharing keys across accounts.
+Local orchestration + product UI. Secrets stay in gitignored `.env` locally and on the host in production. Cap Veo usage and use per-user rate limits when sharing keys across accounts.

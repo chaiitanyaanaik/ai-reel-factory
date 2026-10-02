@@ -214,6 +214,31 @@ def _load_broll_report(project_dir: Path) -> list:
     return [BrollSourceEntry.model_validate(x) for x in raw]
 
 
+def _stage_error_message(project_dir: Path, stage: str, err: BaseException) -> str:
+    """Prefer a readable stage error; fall back to cover metadata when SDK masks it."""
+    text = str(err).strip() or type(err).__name__
+    if "generator didn't stop after throw" not in text.lower():
+        return text
+    if stage == "cover":
+        import json
+
+        meta_path = project_dir / "cover" / "metadata.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                saved = (meta.get("error_message") or "").strip()
+                if saved:
+                    return saved
+            except Exception:
+                pass
+    cause = err.__cause__ or err.__context__
+    if cause is not None and cause is not err:
+        nested = str(cause).strip()
+        if nested and "generator didn't stop after throw" not in nested.lower():
+            return nested
+    return text
+
+
 def run_pipeline(
     project_name: str,
     from_stage: str | None = None,
@@ -294,14 +319,31 @@ def run_pipeline(
                 "to_stage": to_stage,
                 "mode": mode.value,
             },
-            metadata={"project_id": project_name, "job_id": job_id},
+            metadata={
+                "project_id": project_name,
+                "job_id": job_id,
+                "category": (
+                    "reel_rerender"
+                    if from_stage == "render" and to_stage == "render"
+                    else ("broll_generate" if to_stage == "broll" else "pipeline")
+                ),
+            },
         ):
             for name in order[start:end]:
                 update_manifest(project_dir, current_stage=name)
                 t0 = time.monotonic()
                 started = utc_now()
                 try:
-                    with observe(f"stage.{name}", as_type="span", metadata={"stage": name}):
+                    stage_category = (
+                        "reel_rerender"
+                        if name == "render" and from_stage == "render"
+                        else ("broll_generate" if name == "broll" else name)
+                    )
+                    with observe(
+                        f"stage.{name}",
+                        as_type="span",
+                        metadata={"stage": name, "category": stage_category},
+                    ):
                         STAGES[name](project_dir)
                     dur = time.monotonic() - t0
                     report.stages.append(
@@ -315,6 +357,7 @@ def run_pipeline(
                     )
                 except Exception as e:
                     dur = time.monotonic() - t0
+                    err_text = _stage_error_message(project_dir, name, e)
                     report.stages.append(
                         StageResult(
                             name=name,
@@ -322,10 +365,10 @@ def run_pipeline(
                             started_at=started,
                             finished_at=utc_now(),
                             duration_seconds=round(dur, 3),
-                            error=str(e),
+                            error=err_text,
                         )
                     )
-                    report.errors.append(f"{name}: {e}")
+                    report.errors.append(f"{name}: {err_text}")
                     report.status = JobStatus.failed
                     report.finished_at = utc_now()
                     report.broll = _load_broll_report(project_dir)
@@ -336,7 +379,7 @@ def run_pipeline(
                         project_dir,
                         status=JobStatus.failed,
                         current_stage=name,
-                        error=str(e),
+                        error=err_text,
                         artifacts=report.artifacts,
                     )
                     raise

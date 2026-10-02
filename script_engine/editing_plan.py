@@ -15,7 +15,11 @@ def script_to_editing_plan(script: str, project_dir: Path | None = None) -> dict
     Each broll beat has a suggestion in Subject/Camera/Scene format.
     Falls back to a simple all-aroll plan if the LLM call fails.
     """
-    base_prompt = load_prompt("editing_plan", script=script)
+    from core.user_brand import brand_context_text, load_user_brand, owner_id_from_project
+
+    owner = owner_id_from_project(project_dir)
+    brand_ctx = brand_context_text(load_user_brand(owner))
+    base_prompt = load_prompt("editing_plan", script=script, brand_context=brand_ctx)
 
     refs = load_references("visual-patterns", "writing-styles")
     if refs:

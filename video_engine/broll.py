@@ -1,15 +1,18 @@
 """
-B-roll: Pexels-first with optional Veo fallback (opt-in, capped).
+B-roll: Veo-only generation (Pexels helpers retained but unused).
 Per-clip skip keeps A-roll when no match — no silent placeholder success.
 """
 from __future__ import annotations
 
 import json
-import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from core.config import env_int, load_env, truthy
 from schemas.models import BrollSourceEntry
+
+CATEGORY_GENERATE = "broll_generate"
 
 
 def load_timeline(project_dir: Path) -> tuple[list[dict], list[dict]]:
@@ -34,20 +37,25 @@ def get_broll_for_fillers(project_dir: Path) -> list[tuple[float, float, Path | 
 
 
 def _resolve_use_veo() -> bool:
-    """Veo enabled when BROLL_USE_VEO=1 or BROLL_VEO_ONLY=1."""
+    """Veo enabled when BROLL_USE_VEO=1 or BROLL_VEO_ONLY=1 (default on)."""
     load_env()
     if _resolve_veo_only():
         return True
-    return truthy("BROLL_USE_VEO", "0")
+    return truthy("BROLL_USE_VEO", "1")
 
 
 def _resolve_veo_only() -> bool:
+    """Product default: Veo only (skip Pexels)."""
     load_env()
-    return truthy("BROLL_VEO_ONLY", "0")
+    return truthy("BROLL_VEO_ONLY", "1")
 
 
 def _veo_max_clips() -> int:
     return env_int("VEO_MAX_CLIPS", 5)
+
+
+def _veo_parallelism() -> int:
+    return max(1, env_int("VEO_PARALLELISM", 3))
 
 
 def _veo_clip_seconds() -> int:
@@ -56,11 +64,11 @@ def _veo_clip_seconds() -> int:
     allowed = (4, 6, 8)
     if raw in allowed:
         return raw
-    # Snap to nearest allowed
     return min(allowed, key=lambda x: abs(x - raw))
 
 
 def _try_pexels(suggestion: str, output_path: Path) -> bool:
+    """Unused in product path (Veo-only). Kept for optional future use."""
     try:
         from .pexels_client import download_video, get_pexels_key
 
@@ -74,6 +82,7 @@ def _try_pexels(suggestion: str, output_path: Path) -> bool:
 
 
 def _try_pexels_filler(output_path: Path) -> bool:
+    """Unused in product path (Veo-only). Kept for optional future use."""
     try:
         from .pexels_client import download_filler, get_pexels_key
 
@@ -121,28 +130,38 @@ def _try_veo_filler(output_path: Path, project_dir: Path) -> bool:
     return True
 
 
+def _spoken_for_range(project_dir: Path, start: float, end: float) -> str:
+    try:
+        from .veo_client import spoken_text_for_range
+
+        return spoken_text_for_range(project_dir, start, end)
+    except Exception:
+        return ""
+
+
 def generate_broll_from_timeline(
     project_dir: Path,
     use_veo: bool | None = None,
 ) -> list[BrollSourceEntry]:
     """
-    Source each broll clip. Missing matches → skipped_keep_aroll (render shows A-roll).
+    Source each broll clip via Veo (parallel). Missing matches → skipped_keep_aroll.
 
     Returns list of BrollSourceEntry for run_report.
     """
-    from core.tracing import observe
+    from core.tracing import flush, get_trace_context, observe, set_trace_context
     from video_engine import broll_meta
 
     if use_veo is None:
         use_veo = _resolve_use_veo()
-    veo_only = _resolve_veo_only()
     veo_budget = _veo_max_clips()
+    workers = _veo_parallelism()
     veo_used = 0
+    veo_lock = threading.Lock()
 
-    if veo_only:
-        print("  [B-roll] Veo-only mode: skipping Pexels.")
-    elif not use_veo:
-        print("  [B-roll] Veo disabled (BROLL_USE_VEO=0). Pexels only.")
+    # Product path: Veo-only (Pexels skipped).
+    print(f"  [B-roll] Veo-only mode (parallelism={workers}, max_clips={veo_budget}).")
+    if not use_veo:
+        print("  [B-roll] Veo disabled (BROLL_USE_VEO=0). Clips will skip to A-roll.")
 
     timeline, _ = load_timeline(project_dir)
     report: list[BrollSourceEntry] = []
@@ -152,7 +171,20 @@ def generate_broll_from_timeline(
     broll_dir = project_dir / "broll"
     broll_dir.mkdir(parents=True, exist_ok=True)
 
-    with observe("broll.stage", as_type="span", metadata={"clips_planned": True}):
+    parent_ctx = get_trace_context()
+
+    pending: list[dict] = []
+    need_filler = False
+
+    with observe(
+        "broll.stage",
+        as_type="span",
+        metadata={
+            "clips_planned": True,
+            "category": CATEGORY_GENERATE,
+            "veo_parallelism": workers,
+        },
+    ):
         for seg in timeline:
             seg_type = seg.get("type")
             if seg_type == "broll":
@@ -165,13 +197,7 @@ def generate_broll_from_timeline(
                     suggestion = "abstract professional B-roll"
                 start = float(seg.get("start", 0) or 0)
                 end = float(seg.get("end", 0) or 0)
-                spoken = ""
-                try:
-                    from .veo_client import spoken_text_for_range
-
-                    spoken = spoken_text_for_range(project_dir, start, end)
-                except Exception:
-                    pass
+                spoken = _spoken_for_range(project_dir, start, end)
 
                 if path.exists():
                     report.append(
@@ -191,88 +217,16 @@ def generate_broll_from_timeline(
                     )
                     continue
 
-                with observe(
-                    "broll.clip",
-                    as_type="span",
-                    metadata={"broll_index": idx, "suggestion": suggestion[:200]},
-                ):
-                    if not veo_only and _try_pexels(suggestion, path):
-                        report.append(
-                            BrollSourceEntry(
-                                broll_index=idx,
-                                source="pexels",
-                                suggestion=suggestion,
-                                path=str(path.name),
-                            )
-                        )
-                        broll_meta.write_generation_meta(
-                            project_dir,
-                            index=int(idx),
-                            source="pexels",
-                            suggestion=suggestion,
-                            spoken_text=spoken,
-                            full_prompt=suggestion,
-                        )
-                        continue
-
-                    if use_veo and veo_used < veo_budget:
-                        try:
-                            veo_result = _try_veo(
-                                suggestion,
-                                path,
-                                project_dir,
-                                start=start,
-                                end=end,
-                            )
-                            veo_used += 1
-                            report.append(
-                                BrollSourceEntry(
-                                    broll_index=idx,
-                                    source="veo",
-                                    suggestion=suggestion,
-                                    path=str(path.name),
-                                )
-                            )
-                            broll_meta.write_generation_meta(
-                                project_dir,
-                                index=int(idx),
-                                source="veo",
-                                suggestion=suggestion,
-                                spoken_text=spoken,
-                                full_prompt=veo_result.full_prompt,
-                                model=veo_result.model,
-                                latency_ms=veo_result.latency_ms,
-                                estimated_cost_usd=veo_result.estimated_cost_usd,
-                                used_image=veo_result.used_image,
-                            )
-                            continue
-                        except Exception as e:
-                            print(f"  [Veo] Failed for {path.name}: {e}")
-                            skip_detail = f"Veo failed: {e}"
-                    elif not use_veo:
-                        skip_detail = "Veo disabled (set BROLL_USE_VEO=1 or BROLL_VEO_ONLY=1)"
-                    elif veo_used >= veo_budget:
-                        skip_detail = f"Veo budget exhausted (VEO_MAX_CLIPS={veo_budget})"
-                    else:
-                        skip_detail = "No B-roll source available"
-
-                    print(f"  [SKIP] Keep A-roll (no B-roll clip): {path.name} — {skip_detail}")
-                    report.append(
-                        BrollSourceEntry(
-                            broll_index=idx,
-                            source="skipped_keep_aroll",
-                            suggestion=suggestion,
-                            detail=skip_detail,
-                        )
-                    )
-                    broll_meta.write_generation_meta(
-                        project_dir,
-                        index=int(idx),
-                        source="skipped_keep_aroll",
-                        suggestion=suggestion,
-                        spoken_text=spoken,
-                        detail=skip_detail,
-                    )
+                pending.append(
+                    {
+                        "idx": int(idx),
+                        "path": path,
+                        "suggestion": suggestion,
+                        "start": start,
+                        "end": end,
+                        "spoken": spoken,
+                    }
+                )
             elif seg_type == "filler":
                 path = broll_dir / "filler.mp4"
                 if path.exists():
@@ -283,20 +237,151 @@ def generate_broll_from_timeline(
                             path="filler.mp4",
                         )
                     )
-                    continue
-                if not veo_only and _try_pexels_filler(path):
-                    report.append(
-                        BrollSourceEntry(
-                            broll_index="filler",
-                            source="pexels",
-                            path="filler.mp4",
-                        )
+                else:
+                    need_filler = True
+
+        def _source_one(item: dict) -> BrollSourceEntry:
+            nonlocal veo_used
+            set_trace_context(
+                user_id=parent_ctx.get("user_id"),
+                user_email=parent_ctx.get("user_email"),
+                project_id=parent_ctx.get("project_id"),
+                job_id=parent_ctx.get("job_id"),
+            )
+            idx = item["idx"]
+            path: Path = item["path"]
+            suggestion = item["suggestion"]
+            spoken = item["spoken"]
+
+            with observe(
+                "broll.clip",
+                as_type="span",
+                metadata={
+                    "broll_index": idx,
+                    "suggestion": suggestion[:200],
+                    "category": CATEGORY_GENERATE,
+                },
+            ) as clip_span:
+                if not use_veo:
+                    skip_detail = "Veo disabled (set BROLL_USE_VEO=1 or BROLL_VEO_ONLY=1)"
+                    clip_span.update(level="WARNING", status_message=skip_detail)
+                    print(f"  [SKIP] Keep A-roll: {path.name} — {skip_detail}")
+                    broll_meta.write_generation_meta(
+                        project_dir,
+                        index=idx,
+                        source="skipped_keep_aroll",
+                        suggestion=suggestion,
+                        spoken_text=spoken,
+                        detail=skip_detail,
                     )
-                    continue
-                if use_veo and veo_used < veo_budget:
-                    try:
-                        _try_veo_filler(path, project_dir)
+                    return BrollSourceEntry(
+                        broll_index=idx,
+                        source="skipped_keep_aroll",
+                        suggestion=suggestion,
+                        detail=skip_detail,
+                    )
+
+                with veo_lock:
+                    if veo_used >= veo_budget:
+                        skip_detail = f"Veo budget exhausted (VEO_MAX_CLIPS={veo_budget})"
+                        clip_span.update(level="WARNING", status_message=skip_detail)
+                        print(f"  [SKIP] Keep A-roll: {path.name} — {skip_detail}")
+                        broll_meta.write_generation_meta(
+                            project_dir,
+                            index=idx,
+                            source="skipped_keep_aroll",
+                            suggestion=suggestion,
+                            spoken_text=spoken,
+                            detail=skip_detail,
+                        )
+                        return BrollSourceEntry(
+                            broll_index=idx,
+                            source="skipped_keep_aroll",
+                            suggestion=suggestion,
+                            detail=skip_detail,
+                        )
+                    veo_used += 1
+
+                try:
+                    veo_result = _try_veo(
+                        suggestion,
+                        path,
+                        project_dir,
+                        start=item["start"],
+                        end=item["end"],
+                    )
+                    broll_meta.write_generation_meta(
+                        project_dir,
+                        index=idx,
+                        source="veo",
+                        suggestion=suggestion,
+                        spoken_text=spoken,
+                        full_prompt=veo_result.full_prompt,
+                        model=veo_result.model,
+                        latency_ms=veo_result.latency_ms,
+                        estimated_cost_usd=veo_result.estimated_cost_usd,
+                        used_image=veo_result.used_image,
+                    )
+                    clip_span.update(
+                        output={"path": path.name, "source": "veo"},
+                        cost_usd=veo_result.estimated_cost_usd,
+                        metadata={
+                            "category": CATEGORY_GENERATE,
+                            "latency_ms": veo_result.latency_ms,
+                        },
+                    )
+                    return BrollSourceEntry(
+                        broll_index=idx,
+                        source="veo",
+                        suggestion=suggestion,
+                        path=str(path.name),
+                    )
+                except Exception as e:
+                    skip_detail = f"Veo failed: {e}"
+                    print(f"  [Veo] Failed for {path.name}: {e}")
+                    clip_span.update(level="ERROR", status_message=skip_detail)
+                    broll_meta.write_generation_meta(
+                        project_dir,
+                        index=idx,
+                        source="skipped_keep_aroll",
+                        suggestion=suggestion,
+                        spoken_text=spoken,
+                        detail=skip_detail,
+                    )
+                    return BrollSourceEntry(
+                        broll_index=idx,
+                        source="skipped_keep_aroll",
+                        suggestion=suggestion,
+                        detail=skip_detail,
+                    )
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(workers, len(pending))) as pool:
+                futures = [pool.submit(_source_one, item) for item in pending]
+                for fut in as_completed(futures):
+                    report.append(fut.result())
+
+        if need_filler:
+            path = broll_dir / "filler.mp4"
+            if use_veo:
+                with veo_lock:
+                    can = veo_used < veo_budget
+                    if can:
                         veo_used += 1
+                if can:
+                    try:
+                        set_trace_context(
+                            user_id=parent_ctx.get("user_id"),
+                            user_email=parent_ctx.get("user_email"),
+                            project_id=parent_ctx.get("project_id"),
+                            job_id=parent_ctx.get("job_id"),
+                        )
+                        with observe(
+                            "broll.filler",
+                            as_type="span",
+                            metadata={"category": CATEGORY_GENERATE},
+                        ):
+                            _try_veo_filler(path, project_dir)
                         report.append(
                             BrollSourceEntry(
                                 broll_index="filler",
@@ -304,9 +389,24 @@ def generate_broll_from_timeline(
                                 path="filler.mp4",
                             )
                         )
-                        continue
                     except Exception as e:
                         print(f"  [Veo] Filler failed: {e}")
+                        report.append(
+                            BrollSourceEntry(
+                                broll_index="filler",
+                                source="skipped_keep_aroll",
+                                detail=f"Filler clip unavailable: {e}",
+                            )
+                        )
+                else:
+                    report.append(
+                        BrollSourceEntry(
+                            broll_index="filler",
+                            source="skipped_keep_aroll",
+                            detail=f"Veo budget exhausted (VEO_MAX_CLIPS={veo_budget})",
+                        )
+                    )
+            else:
                 report.append(
                     BrollSourceEntry(
                         broll_index="filler",
@@ -315,13 +415,23 @@ def generate_broll_from_timeline(
                     )
                 )
 
-    n_pexels = sum(1 for r in report if r.source == "pexels")
+        flush()
+
+    # Stable order: numeric indices then filler
+    def _sort_key(e: BrollSourceEntry):
+        if e.broll_index == "filler":
+            return (1, 0)
+        try:
+            return (0, int(e.broll_index))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return (0, 0)
+
+    report.sort(key=_sort_key)
+
     n_veo = sum(1 for r in report if r.source == "veo")
     n_reuse = sum(1 for r in report if r.source == "reuse")
     n_skip = sum(1 for r in report if r.source == "skipped_keep_aroll")
-    print(
-        f"  B-roll summary: {n_pexels} Pexels, {n_veo} Veo, {n_reuse} reuse, {n_skip} skip→A-roll"
-    )
+    print(f"  B-roll summary: {n_veo} Veo, {n_reuse} reuse, {n_skip} skip→A-roll")
 
     report_path = broll_dir / "source_report.json"
     report_path.write_text(

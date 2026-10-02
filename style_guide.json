@@ -1,10 +1,9 @@
 {
-  "visual_tone": "posh contemporary Indian home: marble or stone countertops, warm brass accents, curated furniture, soft natural light — lifestyle editorial, not mystical set design",
-  "camera_style": "stable for A-roll; for B-roll use quick push-ins, handheld tracking, and over-shoulder shots inside upscale Indian homes",
-  "mood": "intimate, hopeful, gently confronting unhealed patterns without being harsh",
-  "color_palette": "warm ivory walls, teak and walnut wood, soft gold accents, natural daylight, muted linen textiles",
-  "avoid": "no astrology symbols, zodiac wheels, birth charts, constellation overlays, glowing mystical props, harsh lighting, text overlays, logos, stock-photo feel, generic Western suburban kitsch unless the spoken line explicitly names a chart or sky symbol",
+  "visual_tone": "clean lifestyle B-roll, natural light, documentary feel — real places and people, not stock clichés",
+  "camera_style": "stable for A-roll; for B-roll use quick push-ins, handheld tracking, and over-shoulder shots",
+  "mood": "clear, grounded, emotionally honest without being harsh",
+  "color_palette": "natural daylight, muted neutrals, soft contrast",
+  "avoid": "harsh lighting, text overlays, logos, stock-photo feel, generic abstract light patterns as default",
   "format": "vertical 9:16, must look like real video not a photograph, continuous but not floaty motion throughout",
-  "broll_casting": "Indian family, same look across cutaways: parent mid-30s and child about 5–8 years old, polished casual / elevated everyday Indian fashion (linen, soft neutrals, light jewellery on parent), filmed in a posh modern Indian apartment or villa interior (designer kitchen island, living room with art and plants), natural skin tones, no celebrity faces",
-  "filler_clip": "Soft morning light across a designer kitchen island with ceramic cups and fresh flowers in a posh Indian apartment. Camera: gentle overhead push-in. Marble texture, no people, no text, no astrology props."
+  "filler_clip": "Soft morning light across a quiet desk with a notebook and ceramic cup. Camera: gentle overhead push-in. No people, no text."
 }

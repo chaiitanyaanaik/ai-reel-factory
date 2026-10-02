@@ -1,10 +1,14 @@
-# API keys and secrets
+# API keys and secrets — never commit real values
 .env
 .env.*
+.env.local
 !.env.example
+!.env.*.example
 frontend/.env
 frontend/.env.*
+frontend/.env.local
 !frontend/.env.example
+!frontend/.env.*.example
 
 # Python
 __pycache__/
@@ -35,6 +39,7 @@ projects/*/final/
 projects/*/subtitles/
 projects/*/cover/
 projects/.usage/
+projects/.users/
 
 # Scrapes / local agent artifacts
 .firecrawl/
@@ -59,3 +64,6 @@ desktop.ini
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
+
+# Root npm (concurrently)
+node_modules/

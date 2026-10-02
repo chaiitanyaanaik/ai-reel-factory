@@ -1,6 +1,6 @@
-# ReelKut — design tokens (from Stitch)
+# ReelKut — design tokens (from Stitch + landing)
 
-Light, calm creator tool. Orange = primary action / active step.
+Light, calm creator tool. Blue = primary action / active step (matches landing hero).
 
 | Token | Hex | Use |
 |-------|-----|-----|
@@ -9,8 +9,11 @@ Light, calm creator tool. Orange = primary action / active step.
 | `--ink` | `#111827` | Primary text |
 | `--muted` | `#6B7280` | Secondary text |
 | `--line` | `#E5E7EB` | Borders |
-| `--orange` | `#F97316` | Primary CTA, active step |
-| `--orange-deep` | `#EA580C` | Hover |
-| `--orange-soft` | `#FFEDD5` | Index chips, soft badges |
+| `--accent` | `#2563EB` | Primary CTA, active step (landing blue) |
+| `--accent-deep` | `#1D4ED8` | Hover |
+| `--accent-soft` | `#DBEAFE` | Index chips, soft badges |
+| `--accent-wash` | `#EFF6FF` | Soft selected / wash backgrounds |
 
-Typography: **Plus Jakarta Sans** (400–800). Hero: blue→indigo (`#2563eb` → `#4f46e5`). Accent sticker yellow `#FFD027`, CTA green `#34d399`. Radius ~12–22px.
+Legacy aliases `--orange*` map to the same accent blues.
+
+Typography: **Plus Jakarta Sans** (400–800). Hero: blue→indigo (`#2563eb` → `#4f46e5`). Accent sticker yellow `#FFD027`, CTA green `#34d399` on landing. Radius ~12–22px.

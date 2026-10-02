@@ -3,14 +3,13 @@ services:
     build: .
     ports:
       - "8000:8000"
-    # Inject secrets at runtime — never COPY .env into the image (.dockerignore excludes it).
-    # Use one prod Google/Pexels key (plus a separate staging key); do not hop free keys for quota.
+    # Local: secrets from gitignored .env (see README — Environment configuration).
+    # Production: prefer platform env / secret manager; do not bake secrets into the image.
     env_file:
       - .env
     environment:
-      # Uncomment for shared deploys:
+      # Optional overrides for local compose; production should set these on the host.
       # ENVIRONMENT: production
-      # AUTH_MODE: clerk
       # COOKIE_SECURE: "1"
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     volumes:

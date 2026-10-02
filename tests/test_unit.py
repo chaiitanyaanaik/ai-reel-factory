@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -224,6 +225,35 @@ def test_production_rejects_dev_auth(monkeypatch):
     from core.auth import validate_auth_config
 
     with pytest.raises(RuntimeError, match="AUTH_MODE=dev"):
+        validate_auth_config()
+
+
+def test_load_env_production_does_not_override_host(tmp_path, monkeypatch):
+    """Host/CI env wins when ENVIRONMENT=production."""
+    from core import config as cfg
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("GOOGLE_API_KEY=from-dotenv-file\nENVIRONMENT=production\n", encoding="utf-8")
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("GOOGLE_API_KEY", "from-host")
+    cfg.load_env()
+    assert os.environ["GOOGLE_API_KEY"] == "from-host"
+
+
+def test_clerk_requires_issuer_and_strong_secret(monkeypatch):
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv("AUTH_MODE", "clerk")
+    monkeypatch.setenv("CLERK_ISSUER", "https://real-app.clerk.accounts.dev")
+    monkeypatch.setenv("AUTH_SECRET", "reelkut-dev-secret-change-me-32b")
+    from core.auth import validate_auth_config
+
+    with pytest.raises(RuntimeError, match="AUTH_SECRET"):
+        validate_auth_config()
+
+    monkeypatch.setenv("AUTH_SECRET", "unit-test-secret-at-least-32-chars!!")
+    monkeypatch.setenv("CLERK_ISSUER", "https://your-app.clerk.accounts.dev")
+    with pytest.raises(RuntimeError, match="CLERK_ISSUER"):
         validate_auth_config()
 
 

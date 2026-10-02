@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -46,6 +46,20 @@ def is_production() -> bool:
 def auth_mode() -> str:
     load_env()
     return (os.environ.get("AUTH_MODE") or "dev").strip().lower()
+
+
+def _clerk_issuer() -> str:
+    load_env()
+    issuer = (os.environ.get("CLERK_ISSUER") or "").strip().rstrip("/")
+    lowered = issuer.lower()
+    if (
+        not issuer
+        or "your-instance" in lowered
+        or "your-app" in lowered
+        or "your_instance" in lowered
+    ):
+        return ""
+    return issuer
 
 
 def auth_required() -> bool:
@@ -111,8 +125,21 @@ def validate_auth_config() -> None:
             raise RuntimeError(
                 "AUTH_SECRET must be set to a strong unique value (≥32 chars) in production."
             )
-        if mode == "clerk" and not (os.environ.get("CLERK_ISSUER") or "").strip():
+        if mode == "clerk" and not _clerk_issuer():
             raise RuntimeError("CLERK_ISSUER is required when AUTH_MODE=clerk in production.")
+
+    if mode == "clerk":
+        if not _clerk_issuer():
+            raise RuntimeError(
+                "CLERK_ISSUER is required when AUTH_MODE=clerk. "
+                "Clerk Dashboard → Configure → API Keys → Frontend API URL "
+                "(e.g. https://your-app.clerk.accounts.dev)."
+            )
+        if secret.lower() in _WEAK_SECRETS or len(secret) < 32:
+            raise RuntimeError(
+                "AUTH_SECRET must be a strong unique value (≥32 chars) when AUTH_MODE=clerk "
+                "(used for short-lived media tokens). Generate with: openssl rand -hex 32"
+            )
 
     if secret.lower() in _WEAK_SECRETS and mode == "dev":
         logger.warning(
@@ -239,11 +266,11 @@ def _decode_clerk_token(token: str) -> CurrentUser:
     except ImportError as e:
         raise RuntimeError("Install PyJWT: pip install PyJWT") from e
 
-    issuer = (os.environ.get("CLERK_ISSUER") or "").strip().rstrip("/")
+    issuer = _clerk_issuer()
     if not issuer:
         raise HTTPException(
             status_code=500,
-            detail="CLERK_ISSUER not configured",
+            detail="CLERK_ISSUER not configured (set in .env when AUTH_MODE=clerk)",
         )
     jwks_url = (os.environ.get("CLERK_JWKS_URL") or f"{issuer}/.well-known/jwks.json").strip()
     audience = (os.environ.get("CLERK_AUDIENCE") or "").strip() or None
@@ -265,16 +292,37 @@ def _decode_clerk_token(token: str) -> CurrentUser:
             headers={"WWW-Authenticate": "Bearer"},
         ) from e
 
-    email = (
-        payload.get("email")
-        or payload.get("primary_email_address")
-        or ""
-    )
+    email = _email_from_clerk_payload(payload)
+    name = payload.get("name") or payload.get("full_name")
+    if not name and isinstance(payload.get("given_name"), str):
+        name = payload.get("given_name")
     return CurrentUser(
         id=str(payload["sub"]),
         email=str(email),
-        name=payload.get("name") or payload.get("full_name"),
+        name=name if isinstance(name, str) else None,
     )
+
+
+def _email_from_clerk_payload(payload: dict[str, Any]) -> str:
+    """Extract email from Clerk session JWT (claims vary by template)."""
+    direct = payload.get("email") or payload.get("primary_email_address")
+    if isinstance(direct, str) and "@" in direct:
+        return direct.strip().lower()
+    emails = payload.get("email_addresses")
+    if isinstance(emails, list) and emails:
+        first = emails[0]
+        if isinstance(first, str) and "@" in first:
+            return first.strip().lower()
+        if isinstance(first, dict):
+            addr = first.get("email_address") or first.get("email")
+            if isinstance(addr, str) and "@" in addr:
+                return addr.strip().lower()
+    for key, val in payload.items():
+        if not isinstance(key, str) or "email" not in key.lower():
+            continue
+        if isinstance(val, str) and "@" in val:
+            return val.strip().lower()
+    return ""
 
 
 def decode_access_token(token: str) -> CurrentUser:
@@ -287,6 +335,17 @@ def decode_access_token(token: str) -> CurrentUser:
         unverified = _jwt.decode(token, options={"verify_signature": False})
         if unverified.get("iss") == "reelkut-media" or unverified.get("typ") == "media":
             return _decode_dev_token(token)
+        if mode == "clerk" and unverified.get("iss") == "reelkut-dev":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Stale local email-login token (AUTH_MODE=clerk). "
+                    "Sign out, clear site data for this origin, then sign in with Clerk."
+                ),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except HTTPException:
+        raise
     except Exception:
         pass
 
@@ -300,11 +359,25 @@ def _extract_token(
     creds: Optional[HTTPAuthorizationCredentials],
     access_token: Optional[str],
 ) -> Optional[str]:
-    # Prefer Authorization, then httponly cookie, then query (last resort — logs/Referer).
+    # Prefer Authorization; ignore stale reelkut_token cookie when verifying Clerk.
     if creds and creds.scheme.lower() == "bearer" and creds.credentials:
         return creds.credentials
     cookie = request.cookies.get("reelkut_token")
     if cookie:
+        if auth_mode() == "clerk":
+            # Dev-login cookies have no JWKS kid — never feed them to Clerk verify.
+            try:
+                import jwt as _jwt
+
+                unverified = _jwt.decode(cookie, options={"verify_signature": False})
+                if unverified.get("iss") in ("reelkut-dev", "reelkut-media") or unverified.get(
+                    "typ"
+                ) == "media":
+                    if unverified.get("iss") == "reelkut-media" or unverified.get("typ") == "media":
+                        return cookie
+                    return None
+            except Exception:
+                return None
         return cookie
     if access_token:
         return access_token

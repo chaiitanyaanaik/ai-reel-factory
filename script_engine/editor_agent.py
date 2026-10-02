@@ -66,10 +66,9 @@ Do NOT change spoken words.
 - Format: "[Subject doing a physical action]. Camera: [one move]. [Scene/lighting]."
 - MUST be literal and filmable: body language, hands, posture, eyes looking down, a nod, a flinch.
 - Ban emotion adjectives (apprehension, fear, hope, tension, obedience) — show them as actions.
-- Setting: posh contemporary Indian home; casting: Indian parent + child, elevated casual wardrobe.
-- Do NOT invent astrology charts, zodiac wheels, or mystical symbols unless the spoken line in that window explicitly asks for them.
+- Obey Brand & scene / Style Guide below for casting, setting, mood, and avoid list. Do not invent a niche world that contradicts that block.
 - Ground each suggestion in the spoken words of THAT time window (timed segments), not a generic theme.
-- Keep casting consistent across beats (same age band / household look when people appear).
+- Keep casting consistent across beats (same age band / look when people appear).
 
 ## Hard pacing guardrails (must obey)
 - At most {rules.max_broll_count} B-roll beats in the whole video.

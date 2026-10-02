@@ -76,17 +76,15 @@ def get_api_key() -> str:
     return key
 
 
-def load_style_guide(project_dir: Path | None = None) -> dict:
-    """Load style guide -- project-level overrides global default."""
-    guide = {}
-    global_path = ROOT / "style_guide.json"
-    if global_path.exists():
-        guide = json.loads(global_path.read_text(encoding="utf-8"))
-    if project_dir:
-        project_path = project_dir / "style_guide.json"
-        if project_path.exists():
-            guide.update(json.loads(project_path.read_text(encoding="utf-8")))
-    return guide
+def load_style_guide(
+    project_dir: Path | None = None,
+    *,
+    user_id: str | None = None,
+) -> dict:
+    """Load style guide: global → user brand → optional project override."""
+    from core.user_brand import load_merged_style_guide
+
+    return load_merged_style_guide(project_dir, user_id=user_id)
 
 
 def _build_style_suffix(style: dict, kinetic: bool = False) -> str:

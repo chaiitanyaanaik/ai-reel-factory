@@ -1,8 +1,3 @@
----
-
-### 2. Reference: Hook Patterns (`references/hook-patterns.md`)
-
-```markdown
 # Viral Hook Patterns
 
 The first 3 seconds determine if a viewer stays or scrolls. Use these specific formulas.
@@ -53,14 +48,3 @@ The first 3 seconds determine if a viewer stays or scrolls. Use these specific f
 *   **Speed:** 1-3s tolerance.
 *   **Style:** Story-driven, loopable.
 *   **Logic:** Often connects the end sentence to the start sentence for an infinite loop.
-
----
-
-## Parenting + Astrology Hook Examples
-
-Use the patterns above, but plug in parents, kids, and charts:
-
-*   **Negative Urgency:** "Stop blaming your child. Their chart is copying your stress." / "This one habit in your chart is exhausting your kid."
-*   **Curiosity Gap:** "I put a mom and her daughter's charts side by side. What I saw shocked me." / "This one line in your birth chart explains your child's meltdowns."
-*   **Counter-Intuitive:** "Your child's 'bad behavior' is not in their chart. It's in yours." / "Why fixing your own moon sign calms your kid faster than any parenting hack."
-*   **Specificity Slam:** "Two planets, one childhood pattern. Watch what happens when a parent heals this aspect." / "Three chart placements that quietly control your child's confidence."

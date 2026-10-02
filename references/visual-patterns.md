@@ -24,23 +24,23 @@ A script provides the audio, but visuals retain the eye.
 
 ---
 
-## 5. Parenting Visual Patterns (posh Indian home)
+## 5. Literal Visual Patterns
 
-Use visuals that literally show what the line is saying, grounded in real life:
+Use visuals that literally show what the line is saying, grounded in real life (obey the brand setting/casting when provided):
 
-*   **Parent–Child Mirroring:** Child copying a parent's posture, facial tension, or habits at home (designer kitchen, living room, bedroom doorway).
-*   **Household Micro-Moments:** Late-night scrolling, rushed mornings, quiet meals — clear parent/child presence in a **posh contemporary Indian** apartment or villa.
-*   **Healing & Connection:** Hugs, eye-level conversations, sitting together on a sofa, small daily rituals.
-*   **Astrology props (rare):** Printed charts / sky symbols **only** when the spoken line explicitly mentions a chart, planet, or birth chart — never as default set dressing.
+*   **People mirroring:** Someone copying another's posture, facial tension, or habits.
+*   **Everyday micro-moments:** Late-night scrolling, rushed mornings, quiet meals — clear presence of the people the brand describes.
+*   **Connection beats:** Hugs, eye-level conversations, sitting together, small daily rituals.
+*   **Niche props (rare):** Charts, tools, or specialty objects **only** when the spoken line explicitly names them — never as default set dressing.
 
 Prefer:
 
-*   Recognizable, specific **upscale Indian** locations (marble kitchen island, curated living room, balcony garden).
-*   Indian casting; elevated casual wardrobe.
+*   Recognizable, specific locations from the brand world.
+*   Consistent casting and wardrobe across cutaways.
 *   Observable actions that match the spoken sentence.
 
 Avoid:
 
-*   Default astrology iconography (zodiac wheels, constellation overlays, glowing mystical props) when the line is about behavior/emotion only.
+*   Default iconography or props when the line is about behavior/emotion only.
 *   Generic forests, rivers, abstract glowing walls, or random light leaks **unless** the script line explicitly mentions nature or that symbol.
 *   Shots where the viewer cannot quickly tell how the visual connects to the words.

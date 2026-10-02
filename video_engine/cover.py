@@ -184,15 +184,9 @@ def select_best_frame(frame_paths: list[Path]) -> Path:
 
 
 def _load_style_guide(project_dir: Path) -> dict:
-    guide = {}
-    global_path = ROOT / "style_guide.json"
-    if global_path.exists():
-        guide = json.loads(global_path.read_text(encoding="utf-8"))
-    project_path = project_dir / "style_guide.json"
-    if project_path.exists():
-        guide.update(json.loads(project_path.read_text(encoding="utf-8")))
-    return guide
+    from core.user_brand import load_merged_style_guide
 
+    return load_merged_style_guide(project_dir)
 
 def _describe_reference_frame(frame_path: Path) -> str:
     """Use Gemini vision to describe the selected A-roll frame."""
@@ -287,6 +281,52 @@ def _extract_generated_image_bytes(response) -> bytes | None:
             if data:
                 return data
     return None
+
+
+def _format_cover_api_error(err: BaseException, *, model: str) -> str:
+    """Turn Gemini/SDK failures into a readable message for the UI / run report."""
+    code = getattr(err, "code", None)
+    status = getattr(err, "status", None)
+    message = getattr(err, "message", None)
+    details: list[str] = [f"model={model}"]
+
+    if code is not None:
+        details.append(f"http={code}")
+    if status:
+        details.append(f"status={status}")
+
+    body = ""
+    response_json = getattr(err, "response_json", None)
+    if isinstance(response_json, dict):
+        error_obj = response_json.get("error") or response_json
+        if isinstance(error_obj, dict):
+            body = str(
+                error_obj.get("message")
+                or error_obj.get("status")
+                or error_obj
+            )
+            if not status and error_obj.get("status"):
+                details.append(f"status={error_obj.get('status')}")
+        else:
+            body = str(error_obj)
+
+    text = (message or body or str(err) or type(err).__name__).strip()
+    # Common opaque wrap from google-genai / contextlib — keep cause if present.
+    if "generator didn't stop after throw" in text.lower():
+        cause = err.__cause__ or err.__context__
+        if cause is not None and cause is not err:
+            return _format_cover_api_error(cause, model=model)
+        text = f"{text} (underlying Gemini error was masked by the SDK)"
+
+    return f"{text} [{', '.join(details)}]"
+
+
+def _write_cover_metadata(project_dir: Path, metadata: dict) -> Path:
+    cover_dir = project_dir / "cover"
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    path = cover_dir / "metadata.json"
+    path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def _compose_cover_layout(
@@ -416,72 +456,112 @@ def generate_cover_with_model(
     used_fallback = False
     error_message = ""
     temp_ai_path = cover_dir / "ai_image.jpg"
+    primary_model = model
+    secondary_model = os.environ.get("COVER_IMAGE_FALLBACK_MODEL", "gemini-3.1-flash-image-preview")
 
     try:
         # Primary Pipeline
         response = client.models.generate_content(
-            model=model,
+            model=primary_model,
             contents=base_parts,
         )
         image_bytes = _extract_generated_image_bytes(response)
         if not image_bytes:
-            raise RuntimeError("Primary Image API returned no image bytes.")
+            finish = None
+            cands = getattr(response, "candidates", None) or []
+            if cands:
+                finish = getattr(cands[0], "finish_reason", None)
+            raise RuntimeError(
+                f"Primary Image API returned no image bytes"
+                + (f" (finish_reason={finish})" if finish else "")
+            )
         temp_ai_path.write_bytes(image_bytes)
         out_path.write_bytes(image_bytes)
 
     except Exception as e:
-        error_message = f"Primary model failed: {e}"
+        primary_err = _format_cover_api_error(e, model=primary_model)
+        error_message = f"Primary model failed: {primary_err}"
         try:
             # Secondary/Fallback Pipeline
             used_fallback = True
-            secondary_model = os.environ.get("COVER_IMAGE_FALLBACK_MODEL", "gemini-3.1-flash-image-preview")
-            
-            # Use the exact same parts payload, ensuring determinism across models
             resp2 = client.models.generate_content(
                 model=secondary_model,
                 contents=base_parts,
             )
             image_bytes = _extract_generated_image_bytes(resp2)
             if not image_bytes:
-                raise RuntimeError("Secondary model returned no image bytes.")
+                finish = None
+                cands = getattr(resp2, "candidates", None) or []
+                if cands:
+                    finish = getattr(cands[0], "finish_reason", None)
+                raise RuntimeError(
+                    f"Secondary model returned no image bytes"
+                    + (f" (finish_reason={finish})" if finish else "")
+                )
             temp_ai_path.write_bytes(image_bytes)
             out_path.write_bytes(image_bytes)
-            
+
         except Exception as e2:
-            error_message = f"{error_message} | Secondary model failed: {e2}"
-            raise RuntimeError(error_message)
+            secondary_err = _format_cover_api_error(e2, model=secondary_model)
+            error_message = f"{error_message} | Secondary model failed: {secondary_err}"
+            raise RuntimeError(error_message) from e2
 
     return out_path, used_fallback, error_message
+
 
 def generate_cover_from_reel(project_dir: Path) -> Path:
     context = build_cover_prompt_context(project_dir)
     candidates = extract_candidate_frames(project_dir)
     selected_frame = select_best_frame(candidates)
     prompt_text = _build_cover_prompt(context, project_dir)
-    cover_path, used_fallback, error_message = generate_cover_with_model(
-        project_dir=project_dir,
-        selected_frame=selected_frame,
-        headline_text=context["headline_text"],
-        prompt_text=prompt_text,
-    )
 
     cover_dir = project_dir / "cover"
     cover_dir.mkdir(parents=True, exist_ok=True)
     (cover_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
 
-    metadata = {
+    base_meta = {
         "headline_text": context["headline_text"],
         "selected_frame": str(selected_frame),
         "frame_candidates": [str(p) for p in candidates],
-        "cover_output": str(cover_path),
-        "used_fallback": used_fallback,
-        "error_message": error_message,
         "cover_image_model": os.environ.get("COVER_IMAGE_MODEL", "gemini-3-pro-image-preview"),
+        "cover_image_fallback_model": os.environ.get(
+            "COVER_IMAGE_FALLBACK_MODEL", "gemini-3.1-flash-image-preview"
+        ),
         "cover_require_ai": os.environ.get("COVER_REQUIRE_AI", "1"),
         "global_style_references_used": [str(p) for p in _detect_global_style_references()],
     }
-    (cover_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+
+    try:
+        cover_path, used_fallback, error_message = generate_cover_with_model(
+            project_dir=project_dir,
+            selected_frame=selected_frame,
+            headline_text=context["headline_text"],
+            prompt_text=prompt_text,
+        )
+    except Exception as e:
+        _write_cover_metadata(
+            project_dir,
+            {
+                **base_meta,
+                "cover_output": None,
+                "used_fallback": True,
+                "status": "failed",
+                "error_message": _format_cover_api_error(
+                    e,
+                    model=str(base_meta["cover_image_model"]),
+                ),
+            },
+        )
+        raise
+
+    _write_cover_metadata(
+        project_dir,
+        {
+            **base_meta,
+            "cover_output": str(cover_path),
+            "used_fallback": used_fallback,
+            "status": "ok",
+            "error_message": error_message,
+        },
     )
     return cover_path

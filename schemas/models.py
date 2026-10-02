@@ -187,3 +187,29 @@ class AuthTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: AuthUser
+
+
+class BrandProfile(BaseModel):
+    """Per-user brand / visual world injected into Gemini + Veo prompts."""
+
+    niche: Optional[str] = Field(default=None, description="Topic domain, e.g. fitness coaching")
+    audience: Optional[str] = Field(default=None, description="Who the content is for")
+    visual_tone: Optional[str] = None
+    mood: Optional[str] = None
+    color_palette: Optional[str] = None
+    camera_style: Optional[str] = None
+    setting: Optional[str] = Field(
+        default=None,
+        description="Visual world / locations for B-roll (alias visual_world)",
+    )
+    visual_world: Optional[str] = Field(
+        default=None,
+        description="Optional alias for setting",
+    )
+    broll_casting: Optional[str] = Field(
+        default=None,
+        description="People look / wardrobe / consistency for cutaways",
+    )
+    avoid: Optional[str] = None
+    filler_clip: Optional[str] = None
+    format: Optional[str] = None

@@ -94,10 +94,14 @@ def get_langfuse():
         from langfuse import Langfuse
 
         kwargs: dict[str, Any] = {
-            "public_key": os.environ["LANGFUSE_PUBLIC_KEY"].strip(),
-            "secret_key": os.environ["LANGFUSE_SECRET_KEY"].strip(),
+            "public_key": os.environ["LANGFUSE_PUBLIC_KEY"].strip().strip('"'),
+            "secret_key": os.environ["LANGFUSE_SECRET_KEY"].strip().strip('"'),
         }
-        host = (os.environ.get("LANGFUSE_HOST") or "").strip()
+        # Langfuse docs use LANGFUSE_BASE_URL; we also accept LANGFUSE_HOST.
+        host = (
+            (os.environ.get("LANGFUSE_BASE_URL") or "").strip().strip('"')
+            or (os.environ.get("LANGFUSE_HOST") or "").strip().strip('"')
+        )
         if host:
             kwargs["host"] = host
         _client = Langfuse(**kwargs)
@@ -267,32 +271,27 @@ def observe(
         input=input,
         model=model,
     )
+
+    # Setup only — never yield inside this try. A second yield after throw()
+    # produces RuntimeError: generator didn't stop after throw().
+    langfuse_cm: Any = None
+    legacy_child = False
     client = get_langfuse()
     if client is not None:
         try:
             start = getattr(client, "start_as_current_observation", None)
             if callable(start):
-                cm = start(
+                langfuse_cm = start(
                     as_type=as_type,
                     name=name,
                     input=_truncate(input) if input is not None else None,
                     metadata=meta,
                     **({"model": model} if model and as_type == "generation" else {}),
                 )
-                inner = cm.__enter__()
+                inner = langfuse_cm.__enter__()
                 obs._obs = inner
                 _attach_trace_identity(inner)
-                try:
-                    yield obs
-                    obs.end(close_sdk=False)
-                    cm.__exit__(None, None, None)
-                except Exception as e:
-                    obs.end(error=e, close_sdk=False)
-                    cm.__exit__(type(e), e, e.__traceback__)
-                    raise
-                return
-            # Legacy SDK v2-style
-            if hasattr(client, "trace"):
+            elif hasattr(client, "trace"):
                 trace = client.trace(
                     name=name,
                     user_id=meta.get("user_id"),
@@ -313,21 +312,31 @@ def observe(
                         metadata=meta,
                     )
                 obs._obs = child
-                try:
-                    yield obs
-                    obs.end()
-                except Exception as e:
-                    obs.end(error=e)
-                    raise
-                return
+                legacy_child = True
         except Exception as e:
-            logger.debug("Langfuse observe fallback to local: %s", e)
+            logger.debug("Langfuse observe setup failed (local span only): %s", e)
+            langfuse_cm = None
+            obs._obs = None
+            legacy_child = False
 
     try:
         yield obs
-        obs.end()
+        obs.end(close_sdk=bool(legacy_child) or langfuse_cm is None)
+        if langfuse_cm is not None:
+            try:
+                langfuse_cm.__exit__(None, None, None)
+            except Exception:
+                logger.debug("Langfuse observation close failed", exc_info=True)
     except Exception as e:
-        obs.end(error=e)
+        obs.end(error=e, close_sdk=bool(legacy_child) or langfuse_cm is None)
+        if langfuse_cm is not None:
+            try:
+                langfuse_cm.__exit__(type(e), e, e.__traceback__)
+            except Exception:
+                logger.debug(
+                    "Langfuse observation exit failed; preserving original error",
+                    exc_info=True,
+                )
         raise
 
 

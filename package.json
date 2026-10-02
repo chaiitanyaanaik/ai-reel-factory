@@ -1,0 +1,13 @@
+{
+  "name": "ai-reel-factory",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "bash scripts/dev-api.sh",
+    "dev:web": "npm run dev --prefix frontend",
+    "postinstall": "npm install --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
