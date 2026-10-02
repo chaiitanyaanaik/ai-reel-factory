@@ -1,0 +1,18 @@
+# Production compose — API only. Nginx on the host serves the SPA + TLS.
+services:
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: production
+      COOKIE_SECURE: "1"
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://reelkut.com,https://www.reelkut.com}
+    volumes:
+      - ./projects:/app/projects
+      - ./style_guide.json:/app/style_guide.json:ro
+      - ./references:/app/references:ro
+      - ./prompts:/app/prompts:ro
+    restart: unless-stopped
