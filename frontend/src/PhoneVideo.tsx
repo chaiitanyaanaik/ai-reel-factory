@@ -44,10 +44,10 @@ export function PhoneStill({
       try {
         const url = await fetchMediaObjectUrl(srcPath);
         if (cancelled) {
-          URL.revokeObjectURL(url);
+          if (url.startsWith("blob:")) URL.revokeObjectURL(url);
           return;
         }
-        created = url;
+        created = url.startsWith("blob:") ? url : null;
         setBlobUrl(url);
       } catch (e) {
         if (!cancelled) {
@@ -68,7 +68,14 @@ export function PhoneStill({
   return (
     <div className="phone phone-still">
       {blobUrl && !loadError ? (
-        <img src={blobUrl} alt="Cover preview" />
+        <img
+          src={blobUrl}
+          alt="Cover preview"
+          onError={() => {
+            setLoadError("Preview unavailable");
+            setBlobUrl(null);
+          }}
+        />
       ) : (
         <div className="phone-empty">
           {loading ? "Loading preview…" : loadError ? "Preview unavailable" : emptyText}
@@ -125,10 +132,10 @@ export default function PhoneVideo({
       try {
         const url = await fetchMediaObjectUrl(srcPath);
         if (cancelled) {
-          URL.revokeObjectURL(url);
+          if (url.startsWith("blob:")) URL.revokeObjectURL(url);
           return;
         }
-        created = url;
+        created = url.startsWith("blob:") ? url : null;
         setBlobUrl(url);
       } catch (e) {
         if (!cancelled) {
@@ -215,10 +222,14 @@ export default function PhoneVideo({
             src={blobUrl || undefined}
             playsInline
             loop
-            preload="auto"
+            preload="metadata"
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onEnded={() => setPlaying(false)}
+            onError={() => {
+              setLoadError("Preview unavailable");
+              setBlobUrl(null);
+            }}
             onClick={() => void togglePlayback()}
           />
           <button

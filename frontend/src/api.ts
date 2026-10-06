@@ -231,30 +231,67 @@ export function withAccessToken(url: string): string {
   return `${url}${sep}access_token=${encodeURIComponent(token)}`;
 }
 
+const MEDIA_TIMEOUT_MS = 45_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then(
+      (v) => {
+        window.clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
 /** Await a media token, then return a playable URL (for &lt;video src&gt;). */
 export async function authenticatedUrl(path: string): Promise<string> {
-  await ensureMediaToken();
-  const token = getCachedMediaToken() || (await resolveToken());
+  await withTimeout(ensureMediaToken(), MEDIA_TIMEOUT_MS, "Media token");
+  const token = getCachedMediaToken() || (await withTimeout(resolveToken(), MEDIA_TIMEOUT_MS, "Auth"));
   if (!token) return path;
   const sep = path.includes("?") ? "&" : "?";
   return `${path}${sep}access_token=${encodeURIComponent(token)}`;
 }
 
 /**
- * Fetch media with Authorization and return a blob: URL.
- * More reliable than &lt;video src="...?access_token="&gt; under Clerk.
- * Caller must revokeObjectURL when done.
+ * Playable media URL for &lt;video&gt;/&lt;img&gt; — prefers short-lived ?access_token=
+ * so the browser can stream instead of waiting on a full blob download.
+ * Falls back to an authorized blob: URL if the token path is unavailable.
+ * Caller must revokeObjectURL only when the returned URL starts with blob:.
  */
 export async function fetchMediaObjectUrl(path: string): Promise<string> {
-  const res = await apiFetch(path);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  try {
+    const url = await authenticatedUrl(path);
+    if (url.includes("access_token=")) return url;
+  } catch {
+    /* fall through to blob */
   }
-  const blob = await res.blob();
-  if (!blob.size) {
-    throw new Error("Empty media response");
+
+  const ctrl = new AbortController();
+  const timer = window.setTimeout(() => ctrl.abort(), MEDIA_TIMEOUT_MS);
+  try {
+    const res = await apiFetch(path, { signal: ctrl.signal });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    const blob = await res.blob();
+    if (!blob.size) {
+      throw new Error("Empty media response");
+    }
+    return URL.createObjectURL(blob);
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      throw new Error("Media request timed out");
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return URL.createObjectURL(blob);
 }
 
 /** Download an authenticated artifact (works under Clerk). */

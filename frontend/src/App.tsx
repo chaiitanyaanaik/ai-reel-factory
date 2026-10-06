@@ -572,43 +572,86 @@ function StudioApp({
       return;
     }
     let cancelled = false;
-    const created: string[] = [];
     (async () => {
-      const entries = await Promise.all(
-        brollClips.map(async (c) => {
-          const idx = Number(c.broll_index);
-          if (!c.video_url && !c.path) return [idx, ""] as const;
-          try {
-            const url = await fetchMediaObjectUrl(
-              `/projects/${projectId}/broll/${idx}/video`
-            );
-            created.push(url);
-            return [idx, url] as const;
-          } catch (e) {
-            console.warn("B-roll media load failed", idx, e);
-            return [idx, ""] as const;
-          }
-        })
-      );
-      if (cancelled) {
-        for (const u of created) URL.revokeObjectURL(u);
-        return;
-      }
-      setBrollMediaUrls((prev) => {
-        for (const u of Object.values(prev)) {
-          if (u.startsWith("blob:")) URL.revokeObjectURL(u);
-        }
-        const map: Record<number, string> = {};
-        for (const [idx, url] of entries) {
-          if (url) map[idx] = url;
-        }
-        return map;
+      const prefer = selectedBrollIndex;
+      const ordered = [...brollClips].sort((a, b) => {
+        const ai = Number(a.broll_index);
+        const bi = Number(b.broll_index);
+        if (prefer == null) return ai - bi;
+        if (ai === prefer) return -1;
+        if (bi === prefer) return 1;
+        return ai - bi;
       });
+
+      for (const c of ordered) {
+        if (cancelled) break;
+        const idx = Number(c.broll_index);
+        if (!c.video_url && !c.path) continue;
+        // Skip if we already have a playable URL for this clip.
+        let already = false;
+        setBrollMediaUrls((prev) => {
+          already = Boolean(prev[idx]);
+          return prev;
+        });
+        if (already) continue;
+        try {
+          const url = await fetchMediaObjectUrl(
+            `/projects/${projectId}/broll/${idx}/video`
+          );
+          if (cancelled) {
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+            break;
+          }
+          setBrollMediaUrls((prev) => {
+            if (prev[idx]) {
+              if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+              return prev;
+            }
+            return { ...prev, [idx]: url };
+          });
+        } catch (e) {
+          console.warn("B-roll media load failed", idx, e);
+        }
+      }
     })();
     return () => {
       cancelled = true;
     };
+    // Re-run when clip list changes; selection only reorders priority for first paint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, brollClips]);
+
+  // If user selects a clip whose URL isn't loaded yet, fetch just that one.
+  useEffect(() => {
+    if (!projectId || selectedBrollIndex == null) return;
+    const clip = brollClips.find((c) => Number(c.broll_index) === selectedBrollIndex);
+    if (!clip || (!clip.video_url && !clip.path)) return;
+    if (brollMediaUrls[selectedBrollIndex]) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const url = await fetchMediaObjectUrl(
+          `/projects/${projectId}/broll/${selectedBrollIndex}/video`
+        );
+        if (cancelled) {
+          if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+          return;
+        }
+        setBrollMediaUrls((prev) => {
+          if (prev[selectedBrollIndex]) {
+            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+            return prev;
+          }
+          return { ...prev, [selectedBrollIndex]: url };
+        });
+      } catch (e) {
+        console.warn("B-roll media load failed", selectedBrollIndex, e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selectedBrollIndex, brollClips, brollMediaUrls]);
 
   useEffect(() => {
     if (menuOpenIndex === null) return;
@@ -1656,7 +1699,7 @@ function StudioApp({
                                   />
                                 ) : (
                                   <div className="broll-thumb-ph">
-                                    {hasVideo ? "…" : "Skipped"}
+                                    {hasVideo ? "…" : "No file"}
                                   </div>
                                 )}
                               </div>
@@ -1769,15 +1812,20 @@ function StudioApp({
                   </div>
                   <aside className="workspace-side">
                     <PhoneVideo
+                      localSrc={
+                        selectedBrollIndex != null
+                          ? brollMediaUrls[selectedBrollIndex] || null
+                          : null
+                      }
                       srcPath={
                         projectId &&
                         selectedBrollIndex != null &&
-                        (brollMediaUrls[selectedBrollIndex] ||
-                          brollClips.some(
-                            (c) =>
-                              Number(c.broll_index) === selectedBrollIndex &&
-                              (c.video_url || c.path)
-                          ))
+                        !brollMediaUrls[selectedBrollIndex] &&
+                        brollClips.some(
+                          (c) =>
+                            Number(c.broll_index) === selectedBrollIndex &&
+                            (c.video_url || c.path)
+                        )
                           ? `/projects/${projectId}/broll/${selectedBrollIndex}/video`
                           : null
                       }
