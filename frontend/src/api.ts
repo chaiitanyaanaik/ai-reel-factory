@@ -9,6 +9,25 @@ export type AuthUser = {
   id: string;
   email: string;
   name?: string | null;
+  is_admin?: boolean;
+};
+
+export type AdminUserRow = {
+  user_id?: string | null;
+  email?: string | null;
+  name?: string | null;
+  last_seen_at?: string | null;
+  pending?: boolean;
+  plan: "free" | "paid";
+  project_limit?: number | null;
+  unlimited: boolean;
+  projects_used: number;
+  source?: string;
+  entitlement?: {
+    plan?: string;
+    project_limit?: number | null;
+    notes?: string;
+  } | null;
 };
 
 export type BrandProfile = {
@@ -24,6 +43,19 @@ export type BrandProfile = {
   avoid?: string | null;
   filler_clip?: string | null;
   format?: string | null;
+};
+
+export type UsageSnapshot = {
+  day: string;
+  limits: Record<string, number>;
+  used: Record<string, number>;
+  projects: {
+    used: number;
+    limit: number | null;
+    unlimited: boolean;
+    plan: string;
+  };
+  is_admin?: boolean;
 };
 
 type TokenProvider = () => Promise<string | null>;
@@ -50,6 +82,7 @@ export function setMemoryToken(token: string | null) {
 
 export type ProjectSummary = {
   id: string;
+  name?: string | null;
   mode: string;
   status: string;
   topic?: string | null;
@@ -67,12 +100,14 @@ export type ClipInfo = {
   index: number;
   filename: string;
   size_bytes: number;
+  duration_seconds?: number | null;
   url: string;
 };
 
 export type ProjectDetail = {
   manifest: {
     id: string;
+    name?: string | null;
     status: string;
     mode: string;
     topic?: string | null;
@@ -325,6 +360,25 @@ export async function fetchMe(): Promise<AuthUser | null> {
   return user;
 }
 
+/** Push Clerk client email/name so admin checks work when the JWT omits email. */
+export async function syncAuthProfile(email: string, name?: string | null): Promise<AuthUser> {
+  const res = await apiFetch("/auth/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, name: name || undefined }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  const user = (await res.json()) as AuthUser;
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  return user;
+}
+
+export async function fetchUsage(): Promise<UsageSnapshot> {
+  const res = await apiFetch("/auth/usage");
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as UsageSnapshot;
+}
+
 export async function getBrand(): Promise<BrandProfile> {
   const res = await apiFetch("/auth/brand");
   if (!res.ok) throw new Error(await parseError(res));
@@ -339,6 +393,39 @@ export async function saveBrand(brand: BrandProfile): Promise<BrandProfile> {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as BrandProfile;
+}
+
+export async function listAdminUsers(): Promise<AdminUserRow[]> {
+  const res = await apiFetch("/admin/users");
+  if (!res.ok) throw new Error(await parseError(res));
+  const data = await res.json();
+  return (data.users ?? []) as AdminUserRow[];
+}
+
+export async function patchAdminUser(
+  userId: string,
+  body: { plan: string; project_limit?: number | null; notes?: string }
+): Promise<void> {
+  const res = await apiFetch(`/admin/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
+export async function upsertAdminUserByEmail(body: {
+  email: string;
+  plan: string;
+  project_limit?: number | null;
+  notes?: string;
+}): Promise<void> {
+  const res = await apiFetch("/admin/users/by-email", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -357,6 +444,19 @@ export async function createProject(name?: string, topic?: string) {
       topic: topic || undefined,
       mode: "video_first",
     }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function updateProject(
+  id: string,
+  body: { name?: string | null; topic?: string | null }
+) {
+  const res = await apiFetch(`/projects/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
@@ -385,6 +485,22 @@ export async function reorderClips(id: string, order: string[]) {
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
+}
+
+export async function deleteClip(id: string, filename: string) {
+  // POST (not DELETE) — some local/prod proxies return 405 for DELETE.
+  const res = await apiFetch(`/projects/${id}/clips/remove`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{
+    project_id: string;
+    deleted: string;
+    clips: ClipInfo[];
+    invalidated: boolean;
+  }>;
 }
 
 export async function startJob(

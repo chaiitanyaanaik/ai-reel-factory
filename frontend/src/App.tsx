@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth, useClerk, useUser, UserButton } from "@clerk/react";
 import {
   clearSession,
   createProject,
+  deleteClip,
   downloadAuthenticated,
   editBroll,
   fetchMe,
   fetchMediaObjectUrl,
+  fetchUsage,
   getBrand,
   getProject,
   getScript,
@@ -23,6 +25,8 @@ import {
   setSession,
   setTokenProvider,
   startJob,
+  syncAuthProfile,
+  updateProject,
   uploadClips,
   type AuthUser,
   type BrandProfile,
@@ -30,12 +34,14 @@ import {
   type ClipInfo,
   type ProjectDetail,
   type ProjectSummary,
+  type UsageSnapshot,
 } from "./api";
 import { isClerkConfigured } from "./clerkConfig";
+import Admin from "./Admin";
 import Landing from "./Landing";
-import PhoneVideo from "./PhoneVideo";
+import PhoneVideo, { PhoneStill } from "./PhoneVideo";
 
-type View = "library" | "wizard" | "brand";
+type View = "library" | "wizard" | "brand" | "admin";
 type Step = "upload" | "script" | "broll" | "final";
 
 const EMPTY_BRAND: BrandProfile = {
@@ -50,6 +56,44 @@ const EMPTY_BRAND: BrandProfile = {
   camera_style: "",
 };
 
+const BRAND_FILL_KEYS: (keyof BrandProfile)[] = [
+  "niche",
+  "audience",
+  "setting",
+  "visual_world",
+  "broll_casting",
+  "mood",
+  "visual_tone",
+  "color_palette",
+  "avoid",
+  "camera_style",
+];
+
+function brandIsFilled(brand: BrandProfile): boolean {
+  return BRAND_FILL_KEYS.some((key) => String(brand[key] ?? "").trim().length > 0);
+}
+
+/** Library badge: prefer artifacts, then job status (failed → completed after a later success). */
+function projectStatusBadge(p: {
+  status: string;
+  has_reel?: boolean;
+  has_script?: boolean;
+}): { label: string; kind: "completed" | "failed" | "running" | "script" | "pending" } {
+  if (p.has_reel || p.status === "completed") {
+    return { label: "Completed", kind: "completed" };
+  }
+  if (p.status === "failed") {
+    return { label: "Retry", kind: "failed" };
+  }
+  if (p.status === "running") {
+    return { label: "Running", kind: "running" };
+  }
+  if (p.has_script) {
+    return { label: "Script", kind: "script" };
+  }
+  return { label: "Pending", kind: "pending" };
+}
+
 const STEPS: { id: Step; label: string; num: string }[] = [
   { id: "upload", label: "Upload & Sequence", num: "01" },
   { id: "script", label: "Extract Script", num: "02" },
@@ -62,12 +106,66 @@ function formatBytes(n: number) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function guessDurationLabel(bytes: number) {
-  // Placeholder until we probe media; keep UI calm
-  if (bytes < 5_000_000) return "~0:15";
-  if (bytes < 20_000_000) return "~0:40";
-  if (bytes < 60_000_000) return "~1:20";
-  return "~2:00+";
+/** Keep in sync with API defaults (MAX_*_DURATION_SECONDS). */
+const MAX_CLIP_SECONDS = 180;
+const MAX_PROJECT_SECONDS = 180;
+
+/** Whole seconds for UI (e.g. 60 → "60s"). */
+function formatSeconds(seconds: number) {
+  return `${Math.max(0, Math.round(seconds))}s`;
+}
+
+function probeFileDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const d = video.duration;
+      URL.revokeObjectURL(url);
+      if (!Number.isFinite(d) || d <= 0) {
+        reject(new Error(`Could not read duration for “${file.name}”.`));
+        return;
+      }
+      resolve(d);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Could not read “${file.name}”. Use MP4 or MOV.`));
+    };
+    video.src = url;
+  });
+}
+
+async function validateVideoFiles(
+  files: File[],
+  existingSeconds: number
+): Promise<{ ok: { file: File; duration: number }[]; error?: string }> {
+  let running = existingSeconds;
+  const ok: { file: File; duration: number }[] = [];
+  for (const file of files) {
+    let duration: number;
+    try {
+      duration = await probeFileDuration(file);
+    } catch (e) {
+      return { ok: [], error: String((e as Error).message || e) };
+    }
+    if (duration > MAX_CLIP_SECONDS + 0.05) {
+      return {
+        ok: [],
+        error: `Video length can't be more than ${MAX_CLIP_SECONDS} seconds.`,
+      };
+    }
+    if (running + duration > MAX_PROJECT_SECONDS + 0.05) {
+      return {
+        ok: [],
+        error: `Video length can't be more than ${MAX_PROJECT_SECONDS} seconds.`,
+      };
+    }
+    running += duration;
+    ok.push({ file, duration });
+  }
+  return { ok };
 }
 
 function ClerkSessionBridge({
@@ -110,9 +208,23 @@ function ClerkSessionBridge({
           name: user.fullName || user.firstName || null,
         };
         setSession(token, authUser);
-        const me = await fetchMe();
+        // Sync Clerk email before /auth/me so ADMIN_EMAILS works without JWT email claims.
+        let me: AuthUser | null = null;
+        if (authUser.email) {
+          me = await syncAuthProfile(authUser.email, authUser.name);
+        } else {
+          me = await fetchMe();
+        }
         if (cancelled) return;
-        onReady(me || authUser);
+        onReady(
+          me
+            ? {
+                ...me,
+                email: me.email || authUser.email,
+                name: me.name || authUser.name,
+              }
+            : authUser
+        );
       } catch (e) {
         console.error("Clerk session bridge failed", e);
         if (!cancelled) onSignedOut();
@@ -253,12 +365,18 @@ function StudioApp({
 }) {
   const [view, setView] = useState<View>("library");
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [step, setStep] = useState<Step>("upload");
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameOriginal, setRenameOriginal] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const pendingDurations = useRef(new WeakMap<File, number>());
+  const [dragOver, setDragOver] = useState(false);
   const [clips, setClips] = useState<ClipInfo[]>([]);
   const [script, setScript] = useState("");
   const [completed, setCompleted] = useState<Partial<Record<Step, boolean>>>({});
@@ -272,22 +390,55 @@ function StudioApp({
   const [editMessage, setEditMessage] = useState("");
   const [editBusyIndex, setEditBusyIndex] = useState<number | null>(null);
   const [reelPreviewKey, setReelPreviewKey] = useState(0);
+  const [coverPreviewKey, setCoverPreviewKey] = useState(0);
+  const [exportPreview, setExportPreview] = useState<"reel" | "cover">("reel");
   const [selectedBrollIndex, setSelectedBrollIndex] = useState<number | null>(null);
   const [brollMediaUrls, setBrollMediaUrls] = useState<Record<number, string>>({});
   const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string | null>(null);
   const [brandForm, setBrandForm] = useState<BrandProfile>(EMPTY_BRAND);
   const [brandLoaded, setBrandLoaded] = useState(false);
   const [brandBusy, setBrandBusy] = useState(false);
+  const skipFeedbackClearOnMount = useRef(true);
+
+  const clearFeedback = useCallback(() => {
+    setError("");
+    setStatus("");
+    setBootError("");
+  }, [setBootError]);
 
   useEffect(() => {
     if (bootError) setError(bootError);
   }, [bootError]);
+
+  // Drop stale status/errors when leaving library ↔ wizard ↔ brand ↔ admin.
+  // (Do not clear on every wizard step — stage runners set status/error after setStep.)
+  useEffect(() => {
+    if (skipFeedbackClearOnMount.current) {
+      skipFeedbackClearOnMount.current = false;
+      return;
+    }
+    clearFeedback();
+  }, [view, clearFeedback]);
+
+  function goToStep(next: Step) {
+    if (next === step) return;
+    clearFeedback();
+    setStep(next);
+  }
 
   const loadBrand = useCallback(async () => {
     const b = await getBrand();
     setBrandForm({ ...EMPTY_BRAND, ...b });
     setBrandLoaded(true);
   }, []);
+
+  useEffect(() => {
+    loadBrand().catch(() => {
+      /* indicator stays until brand loads successfully */
+    });
+  }, [loadBrand]);
+
+  const brandFilled = brandLoaded && brandIsFilled(brandForm);
 
   const loadBrollClips = useCallback(async (id: string, preferIndex?: number | null) => {
     try {
@@ -321,9 +472,18 @@ function StudioApp({
     }
   }, []);
 
-  const refreshLibrary = useCallback(async () => {
-    setProjects(await listProjects());
+  const refreshUsage = useCallback(async () => {
+    try {
+      setUsage(await fetchUsage());
+    } catch {
+      /* keep prior snapshot */
+    }
   }, []);
+
+  const refreshLibrary = useCallback(async () => {
+    const [list] = await Promise.all([listProjects(), refreshUsage()]);
+    setProjects(list);
+  }, [refreshUsage]);
 
   const refreshProject = useCallback(async (id: string) => {
     const d = await getProject(id);
@@ -353,6 +513,12 @@ function StudioApp({
     });
   }, [refreshLibrary, setBootError]);
 
+  // Re-fetch badges when returning to the library (pending/failed → completed).
+  useEffect(() => {
+    if (view !== "library") return;
+    refreshLibrary().catch(() => undefined);
+  }, [view, refreshLibrary]);
+
   async function onLogoutClick() {
     setProjects([]);
     setProjectId(null);
@@ -381,6 +547,12 @@ function StudioApp({
     }),
     [completed, clips.length, detail, brollClips]
   );
+
+  const canRenderReel =
+    doneFlags.upload &&
+    doneFlags.script &&
+    doneFlags.broll &&
+    Boolean(detail?.artifacts.transcript || detail?.artifacts.plan);
 
   useEffect(() => {
     // Always hydrate from disk when visiting this step (run_report may omit broll stage).
@@ -445,7 +617,28 @@ function StudioApp({
     return () => document.removeEventListener("click", onDoc);
   }, [menuOpenIndex]);
 
+  const projectQuota = usage?.projects;
+  const atProjectLimit = Boolean(
+    projectQuota &&
+      !projectQuota.unlimited &&
+      projectQuota.limit != null &&
+      projectQuota.used >= projectQuota.limit
+  );
+  const projectQuotaLabel = !projectQuota
+    ? ""
+    : projectQuota.unlimited || projectQuota.limit == null
+      ? "Unlimited projects"
+      : `${projectQuota.used} of ${projectQuota.limit} projects used`;
+
   async function onNewCut() {
+    if (atProjectLimit) {
+      setError(
+        `Your plan includes ${projectQuota?.limit} project${
+          projectQuota?.limit === 1 ? "" : "s"
+        }. Upgrade to paid for more projects.`
+      );
+      return;
+    }
     setError("");
     setBusy(true);
     setStatus("Creating project…");
@@ -468,8 +661,41 @@ function StudioApp({
       setTopic("");
     } catch (e) {
       setError(String((e as Error).message || e));
+      await refreshUsage();
     } finally {
       setBusy(false);
+    }
+  }
+
+  function projectTitle(p: { id: string; name?: string | null }) {
+    return (p.name || "").trim() || p.id;
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+    setRenameValue("");
+    setRenameOriginal("");
+  }
+
+  async function saveRename(projectIdToRename: string) {
+    const next = renameValue.trim();
+    const prev = renameOriginal.trim();
+    // Unchanged — just close the editor
+    if (next === prev || (next === "" && prev === "")) {
+      cancelRename();
+      return;
+    }
+    try {
+      await updateProject(projectIdToRename, { name: next || null });
+      cancelRename();
+      await refreshLibrary();
+      if (projectId === projectIdToRename) {
+        await refreshProject(projectIdToRename);
+      }
+    } catch {
+      // Keep previous name; don't surface a hard error for a failed rename.
+      cancelRename();
+      await refreshLibrary().catch(() => undefined);
     }
   }
 
@@ -504,7 +730,34 @@ function StudioApp({
     setPendingFiles(next);
   }
 
+  function clipsDurationSeconds() {
+    return clips.reduce((sum, c) => sum + (c.duration_seconds || 0), 0);
+  }
+
+  function pendingDurationSeconds(files: File[] = pendingFiles) {
+    return files.reduce((sum, f) => sum + (pendingDurations.current.get(f) || 0), 0);
+  }
+
+  async function addPendingFiles(incoming: File[]) {
+    if (!incoming.length) return;
+    setError("");
+    const existing = clipsDurationSeconds() + pendingDurationSeconds();
+    const { ok, error: err } = await validateVideoFiles(incoming, existing);
+    if (err) {
+      setError(err);
+      return;
+    }
+    for (const item of ok) {
+      pendingDurations.current.set(item.file, item.duration);
+    }
+    setPendingFiles((prev) => [...prev, ...ok.map((x) => x.file)]);
+    setStatus("");
+  }
+
+  const sequenceLocked = Boolean(detail?.artifacts.reel) || doneFlags.final;
+
   function moveClip(i: number, dir: -1 | 1) {
+    if (sequenceLocked) return;
     const j = i + dir;
     if (j < 0 || j >= clips.length) return;
     const next = [...clips];
@@ -512,8 +765,53 @@ function StudioApp({
     setClips(next);
   }
 
+  async function removeUploadedClip(filename: string) {
+    if (!projectId) return;
+    if (sequenceLocked) {
+      setError("This reel is finalized. Clip remove and reorder are locked.");
+      return;
+    }
+    const derived =
+      Boolean(detail?.artifacts.script) ||
+      Boolean(detail?.artifacts.plan) ||
+      Boolean(detail?.artifacts.merged) ||
+      doneFlags.script ||
+      doneFlags.broll;
+    const msg = derived
+      ? "Remove this clip? Script, B-roll, and final export for this cut will be cleared — you’ll need to extract the script again."
+      : "Remove this clip?";
+    if (!window.confirm(msg)) return;
+
+    setError("");
+    setBusy(true);
+    try {
+      const res = await deleteClip(projectId, filename);
+      setClips(res.clips);
+      if (res.invalidated) {
+        setScript("");
+        setBrollClips([]);
+        setReelStale(false);
+        setEditingIndex(null);
+        setCompleted({ upload: res.clips.length > 0 });
+        setStatus("Clip removed. Re-run Extract script for the new sequence.");
+        setStep("upload");
+      } else {
+        setStatus(res.clips.length ? "Clip removed." : "All clips removed.");
+      }
+      await refreshProject(projectId);
+    } catch (e) {
+      setError(String((e as Error).message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveSequenceAndContinue() {
     if (!projectId) return;
+    if (sequenceLocked) {
+      setError("This reel is finalized. Clip remove and reorder are locked.");
+      return;
+    }
     setError("");
     setBusy(true);
     try {
@@ -581,6 +879,10 @@ function StudioApp({
           setReelStale(false);
           setReelPreviewKey((k) => k + 1);
         }
+        if (to === "cover") {
+          setCoverPreviewKey((k) => k + 1);
+          setExportPreview("cover");
+        }
       }
       setStep(next);
       setStatus(`${label} complete.`);
@@ -630,6 +932,7 @@ function StudioApp({
             className={`nav-link ${view === "library" ? "active" : ""}`}
             onClick={() => {
               setView("library");
+              clearFeedback();
               refreshLibrary().catch(() => undefined);
             }}
           >
@@ -640,13 +943,33 @@ function StudioApp({
             className={`nav-link ${view === "brand" ? "active" : ""}`}
             onClick={() => {
               setView("brand");
-              setError("");
-              setStatus("");
+              clearFeedback();
               loadBrand().catch((e) => setError(String((e as Error).message || e)));
             }}
           >
             Brand
+            {brandLoaded && !brandFilled ? (
+              <span
+                className="nav-incomplete"
+                title="Brand details not filled in yet"
+                aria-label="Brand details not filled in yet"
+              >
+                !
+              </span>
+            ) : null}
           </button>
+          {user?.is_admin ? (
+            <button
+              type="button"
+              className={`nav-link ${view === "admin" ? "active" : ""}`}
+              onClick={() => {
+                setView("admin");
+                clearFeedback();
+              }}
+            >
+              Admin
+            </button>
+          ) : null}
         </div>
         <div className="top-actions">
           {clerkUserButton ? (
@@ -667,8 +990,7 @@ function StudioApp({
             disabled={busy}
             onClick={() => {
               setView("library");
-              setStatus("");
-              setError("");
+              clearFeedback();
             }}
           >
             + New Cut
@@ -677,7 +999,17 @@ function StudioApp({
       </header>
 
       <main className="main">
-        {view === "brand" ? (
+        {view === "admin" && user?.is_admin ? (
+          <>
+            {(status || error) && (
+              <div className="page-feedback" role="status" aria-live="polite">
+                {status ? <p className="status-line">{status}</p> : null}
+                {error ? <p className="error-line">{error}</p> : null}
+              </div>
+            )}
+            <Admin onError={setError} onStatus={setStatus} />
+          </>
+        ) : view === "brand" ? (
           <div className="card">
             <div className="library-hero">
               <h1 className="page-title">Brand</h1>
@@ -815,14 +1147,35 @@ function StudioApp({
             <div className="library-hero">
               <h1 className="page-title">Your cuts</h1>
               <p className="page-sub">Create a new cut or reopen a past reel.</p>
+              {projectQuotaLabel ? (
+                <p
+                  className={`library-quota${atProjectLimit ? " is-limit" : ""}`}
+                  title={
+                    atProjectLimit
+                      ? "Lifetime free-project limit — deleting a cut does not free a slot"
+                      : undefined
+                  }
+                >
+                  {projectQuotaLabel}
+                  {atProjectLimit
+                    ? " — upgrade to paid for more projects"
+                    : projectQuota?.plan === "paid"
+                      ? " (paid)"
+                      : ""}
+                </p>
+              ) : null}
               <div className="form-row">
                 <div className="field">
                   <label htmlFor="name">Name</label>
                   <input
                     id="name"
-                    placeholder="optional"
+                    placeholder="e.g. Q2 launch reel"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    disabled={atProjectLimit}
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      if (error) clearFeedback();
+                    }}
                   />
                 </div>
                 <div className="field">
@@ -831,13 +1184,33 @@ function StudioApp({
                     id="topic"
                     placeholder="B-roll theme only (not dialogue)"
                     value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
+                    disabled={atProjectLimit}
+                    onChange={(e) => {
+                      setTopic(e.target.value);
+                      if (error) clearFeedback();
+                    }}
                   />
                 </div>
-                <button className="btn btn-primary" type="button" disabled={busy} onClick={onNewCut}>
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={busy || atProjectLimit}
+                  title={
+                    atProjectLimit
+                      ? "Your plan includes a limited number of projects. Upgrade to paid for more."
+                      : undefined
+                  }
+                  onClick={onNewCut}
+                >
                   Create cut
                 </button>
               </div>
+              {atProjectLimit && !error ? (
+                <p className="error-line">
+                  Your plan includes {projectQuota?.limit} project
+                  {projectQuota?.limit === 1 ? "" : "s"}. Upgrade to paid for more projects.
+                </p>
+              ) : null}
               {status ? <p className="status-line">{status}</p> : null}
               {error ? <p className="error-line">{error}</p> : null}
             </div>
@@ -845,43 +1218,133 @@ function StudioApp({
               {!projects.length ? (
                 <p className="muted">No projects yet.</p>
               ) : (
-                projects.map((p) => (
-                  <button key={p.id} type="button" className="project-card" onClick={() => openProject(p.id)}>
-                    <div>
-                      <h3>{p.id}</h3>
-                      <p>
-                        {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
-                        {p.topic ? ` · ${p.topic}` : ""}
-                        {p.updated_at ? ` · ${new Date(p.updated_at).toLocaleString()}` : ""}
-                      </p>
+                projects.map((p) => {
+                  const badge = projectStatusBadge(p);
+                  const title = projectTitle(p);
+                  return (
+                    <div
+                      key={p.id}
+                      className="project-card"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open ${title}`}
+                      onClick={() => {
+                        if (renamingId === p.id) return;
+                        void openProject(p.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (renamingId === p.id) return;
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          void openProject(p.id);
+                        }
+                      }}
+                    >
+                      <div className="project-card-body">
+                        <div className="project-card-copy">
+                          {renamingId === p.id ? (
+                            <input
+                              className="project-rename-input"
+                              value={renameValue}
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                e.stopPropagation();
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  void saveRename(p.id);
+                                }
+                                if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  cancelRename();
+                                }
+                              }}
+                              onBlur={() => void saveRename(p.id)}
+                              aria-label="Project name"
+                            />
+                          ) : (
+                            <div className="project-title-row">
+                              <h3>{title}</h3>
+                              <button
+                                type="button"
+                                className="icon-btn project-pencil"
+                                title="Rename"
+                                aria-label={`Rename ${title}`}
+                                disabled={busy}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenamingId(p.id);
+                                  const current = (p.name || "").trim();
+                                  setRenameValue(current);
+                                  setRenameOriginal(current);
+                                  setStatus("");
+                                  setError("");
+                                }}
+                              >
+                                ✎
+                              </button>
+                            </div>
+                          )}
+                          <p>
+                            {p.clip_count} clip{p.clip_count === 1 ? "" : "s"}
+                            {p.topic ? ` · ${p.topic}` : ""}
+                            {p.updated_at
+                              ? ` · ${new Date(p.updated_at).toLocaleString()}`
+                              : ""}
+                          </p>
+                          <p className="project-id-line">{p.id}</p>
+                        </div>
+                        <span
+                          className={`badge badge-${badge.kind}`}
+                          title={
+                            badge.kind === "failed"
+                              ? "Last run failed — open to retry"
+                              : undefined
+                          }
+                        >
+                          {badge.label}
+                        </span>
+                      </div>
                     </div>
-                    <span className={`badge ${p.has_reel ? "ready" : ""}`}>
-                      {p.has_reel ? "Ready" : p.has_script ? "Script" : p.status}
-                    </span>
-                  </button>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
         ) : (
           <div className="card">
             <div className="stepper">
-              {STEPS.map((s) => {
-                const idx = STEPS.findIndex((x) => x.id === s.id);
-                const current = STEPS.findIndex((x) => x.id === step);
-                const done = doneFlags[s.id] || idx < current;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    className={`step ${step === s.id ? "active" : ""} ${done && step !== s.id ? "done" : ""}`}
-                    onClick={() => setStep(s.id)}
-                  >
-                    <span className="num">{s.num}</span>
-                    <span className="step-label">{s.label}</span>
-                  </button>
-                );
-              })}
+              <div className="stepper-steps">
+                {STEPS.map((s) => {
+                  const isActive = step === s.id;
+                  // Only real completion — don't mark earlier steps done just because we're ahead.
+                  const isDone = Boolean(doneFlags[s.id]);
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className={`step ${isActive ? "active" : ""} ${isDone && !isActive ? "done" : ""}`}
+                      onClick={() => goToStep(s.id)}
+                      aria-current={isActive ? "step" : undefined}
+                      title={isDone ? `${s.label} — completed` : s.label}
+                    >
+                      <span className="num" aria-hidden>
+                        {isActive ? s.num : isDone ? "✓" : s.num}
+                      </span>
+                      <span className="step-label">{s.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {doneFlags.final ? (
+                <span className="stepper-complete" title="This cut has a finished reel">
+                  <span className="stepper-complete-mark" aria-hidden>
+                    ✓
+                  </span>
+                  Completed
+                </span>
+              ) : null}
             </div>
 
             {step === "upload" ? (
@@ -889,7 +1352,10 @@ function StudioApp({
                 <div className="workspace">
                   <div className="workspace-main">
                     <h2 className="page-title">Sequence your clips</h2>
-                    <p className="page-sub">Arrange in the order you want them merged.</p>
+                    <p className="page-sub">
+                      Arrange clips in the order you want them merged. The full sequence
+                      can’t exceed {MAX_PROJECT_SECONDS} seconds.
+                    </p>
 
                     <ul className="clip-list">
                       {pendingFiles.map((f, i) => (
@@ -902,7 +1368,8 @@ function StudioApp({
                           <div className="clip-meta">
                             <div className="clip-name">{f.name}</div>
                             <div className="clip-dur">
-                              {guessDurationLabel(f.size)} · {formatBytes(f.size)} · pending
+                              {formatSeconds(pendingDurations.current.get(f) || 0)} ·{" "}
+                              {formatBytes(f.size)} · pending
                             </div>
                           </div>
                           <div className="icon-btns">
@@ -938,27 +1405,91 @@ function StudioApp({
                           <div className="clip-meta">
                             <div className="clip-name">{c.filename}</div>
                             <div className="clip-dur">
-                              {guessDurationLabel(c.size_bytes)} · {formatBytes(c.size_bytes)}
+                              {c.duration_seconds != null
+                                ? formatSeconds(c.duration_seconds)
+                                : "—"}{" "}
+                              · {formatBytes(c.size_bytes)}
                             </div>
                           </div>
                           <div className="icon-btns">
-                            <button type="button" className="icon-btn" onClick={() => moveClip(i, -1)} disabled={i === 0}>
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              onClick={() => moveClip(i, -1)}
+                              disabled={busy || sequenceLocked || i === 0}
+                              title={sequenceLocked ? "Sequence locked after final export" : "Move up"}
+                            >
                               ↑
                             </button>
                             <button
                               type="button"
                               className="icon-btn"
                               onClick={() => moveClip(i, 1)}
-                              disabled={i === clips.length - 1}
+                              disabled={busy || sequenceLocked || i === clips.length - 1}
+                              title={sequenceLocked ? "Sequence locked after final export" : "Move down"}
                             >
                               ↓
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              title={
+                                sequenceLocked
+                                  ? "Sequence locked after final export"
+                                  : "Remove clip"
+                              }
+                              aria-label={`Remove ${c.filename}`}
+                              disabled={busy || sequenceLocked}
+                              onClick={() => void removeUploadedClip(c.filename)}
+                            >
+                              ⌫
                             </button>
                           </div>
                         </li>
                       ))}
                     </ul>
 
-                    <label className="add-drop">
+                    {sequenceLocked ? (
+                      <p className="clip-total muted">
+                        Final reel exists — clip remove and reorder are locked.
+                      </p>
+                    ) : null}
+
+                    {(pendingFiles.length > 0 || clips.length > 0) && (
+                      <p className="clip-total muted">
+                        Sequence total:{" "}
+                        {Math.round(clipsDurationSeconds() + pendingDurationSeconds())} of{" "}
+                        {MAX_PROJECT_SECONDS} seconds
+                      </p>
+                    )}
+
+                    <label
+                      className={`add-drop${dragOver ? " is-dragover" : ""}`}
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragOver(true);
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragOver(true);
+                      }}
+                      onDragLeave={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragOver(false);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragOver(false);
+                        const files = Array.from(e.dataTransfer.files || []).filter((f) =>
+                          /\.(mp4|mov)$/i.test(f.name) || f.type.startsWith("video/")
+                        );
+                        if (files.length) void addPendingFiles(files);
+                      }}
+                    >
                       <input
                         type="file"
                         accept="video/mp4,video/quicktime,.mp4,.mov"
@@ -966,13 +1497,21 @@ function StudioApp({
                         hidden
                         onChange={(e) => {
                           if (e.target.files?.length) {
-                            setPendingFiles([...pendingFiles, ...Array.from(e.target.files)]);
+                            void addPendingFiles(Array.from(e.target.files));
                           }
                           e.target.value = "";
                         }}
                       />
-                      <strong>{pendingFiles.length || clips.length ? "+ Add another clip" : "+ Add clip"}</strong>
-                      <span>MP4 or MOV · or Record in studio (Coming soon)</span>
+                      <span className="add-drop-row">
+                        <span className="btn btn-file">
+                          {pendingFiles.length || clips.length ? "Add files" : "Select files"}
+                        </span>
+                        <span className="add-drop-hint">or drop them here</span>
+                      </span>
+                      <span className="add-drop-meta">
+                        MP4 or MOV · up to {MAX_CLIP_SECONDS} seconds per clip ·{" "}
+                        {MAX_PROJECT_SECONDS} seconds total
+                      </span>
                     </label>
                   </div>
 
@@ -992,16 +1531,32 @@ function StudioApp({
                 </div>
 
                 <div className="footer-bar">
-                  <button type="button" className="btn-text" onClick={() => setView("library")}>
+                  <button
+                    type="button"
+                    className="btn-text"
+                    onClick={() => {
+                      clearFeedback();
+                      setView("library");
+                    }}
+                  >
                     Save draft
                   </button>
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={busy || (!pendingFiles.length && !clips.length)}
+                    disabled={
+                      busy ||
+                      sequenceLocked ||
+                      (!pendingFiles.length && !clips.length)
+                    }
                     onClick={saveSequenceAndContinue}
+                    title={
+                      sequenceLocked
+                        ? "Sequence locked after final export"
+                        : undefined
+                    }
                   >
-                    Continue: Extract script →
+                    Save sequence & continue →
                   </button>
                 </div>
               </>
@@ -1030,16 +1585,16 @@ function StudioApp({
                   ) : null}
                 </div>
                 <div className="footer-bar">
-                  <button type="button" className="btn-text" onClick={() => setStep("upload")}>
+                  <button type="button" className="btn-text" onClick={() => goToStep("upload")}>
                     ← Back
                   </button>
                   <button
                     type="button"
                     className="btn btn-primary"
                     disabled={!doneFlags.script || busy}
-                    onClick={() => setStep("broll")}
+                    onClick={() => goToStep("broll")}
                   >
-                    Continue: Generate B-roll →
+                    Continue →
                   </button>
                 </div>
               </>
@@ -1052,7 +1607,7 @@ function StudioApp({
                     <h2 className="page-title">Generate B-roll</h2>
                     <p className="page-sub">
                       We’ll create short cutaway clips that match what you’re saying. When they’re
-                      ready, review each one — open the ⋮ menu and choose Edit if you want to change a
+                      ready, review each one. Open the ⋮ menu and choose Edit if you want to change a
                       clip.
                     </p>
                     <button
@@ -1137,6 +1692,10 @@ function StudioApp({
                                       placeholder="e.g. warmer light, slower camera move, more close-up…"
                                       onChange={(e) => setEditMessage(e.target.value)}
                                     />
+                                    <p className="broll-edit-safety muted">
+                                      Keep edits safe — no nudity, sexual, violent, hateful, or
+                                      abusive content.
+                                    </p>
                                     <div className="form-row">
                                       <button
                                         type="button"
@@ -1235,7 +1794,7 @@ function StudioApp({
                   </aside>
                 </div>
                 <div className="footer-bar">
-                  <button type="button" className="btn-text" onClick={() => setStep("script")}>
+                  <button type="button" className="btn-text" onClick={() => goToStep("script")}>
                     ← Back
                   </button>
                   <div className="form-row">
@@ -1260,9 +1819,9 @@ function StudioApp({
                       type="button"
                       className="btn btn-primary"
                       disabled={!doneFlags.broll || busy}
-                      onClick={() => setStep("final")}
+                      onClick={() => goToStep("final")}
                     >
-                      Continue: Final export →
+                      Continue →
                     </button>
                   </div>
                 </div>
@@ -1283,11 +1842,16 @@ function StudioApp({
                         B-roll was edited — render again to refresh the reel.
                       </p>
                     ) : null}
-                    <div className="form-row">
+                    <div className="export-actions">
                       <button
                         type="button"
                         className="btn btn-primary"
-                        disabled={busy}
+                        disabled={busy || !canRenderReel}
+                        title={
+                          canRenderReel
+                            ? undefined
+                            : "Finish Upload, Extract script, and Generate B-roll first"
+                        }
                         onClick={() =>
                           runStage(
                             detail?.artifacts.reel || reelStale ? "render" : "subtitles",
@@ -1311,65 +1875,137 @@ function StudioApp({
                       >
                         Generate cover
                       </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={busy || !detail?.artifacts.reel}
+                        title={
+                          detail?.artifacts.reel ? undefined : "Render the reel first"
+                        }
+                        onClick={() => {
+                          if (!projectId || !detail?.artifacts.reel) return;
+                          void downloadAuthenticated(
+                            `/projects/${projectId}/artifacts/reel`,
+                            "reel.mp4"
+                          ).catch((e) => setError(String((e as Error).message || e)));
+                        }}
+                      >
+                        Download reel
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={busy || !detail?.artifacts.cover}
+                        title={
+                          detail?.artifacts.cover ? undefined : "Generate a cover first"
+                        }
+                        onClick={() => {
+                          if (!projectId || !detail?.artifacts.cover) return;
+                          void downloadAuthenticated(
+                            `/projects/${projectId}/artifacts/cover`,
+                            "cover.jpg"
+                          ).catch((e) => setError(String((e as Error).message || e)));
+                        }}
+                      >
+                        Download cover
+                      </button>
                     </div>
-                    {projectId && detail?.artifacts.reel ? (
-                      <div className="form-row" style={{ marginTop: "1rem" }}>
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          disabled={busy}
-                          onClick={() =>
-                            void downloadAuthenticated(
-                              `/projects/${projectId}/artifacts/reel`,
-                              "reel.mp4"
-                            ).catch((e) => setError(String((e as Error).message || e)))
-                          }
-                        >
-                          Download reel
-                        </button>
-                        {detail.artifacts.cover ? (
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            disabled={busy}
-                            onClick={() =>
-                              void downloadAuthenticated(
-                                `/projects/${projectId}/artifacts/cover`,
-                                "cover.jpg"
-                              ).catch((e) => setError(String((e as Error).message || e)))
-                            }
-                          >
-                            Download cover
-                          </button>
-                        ) : null}
-                      </div>
+                    {!canRenderReel ? (
+                      <p className="muted" style={{ marginTop: "0.75rem" }}>
+                        {!doneFlags.upload
+                          ? "Add clips in Upload & Sequence before rendering."
+                          : !doneFlags.script ||
+                              !(detail?.artifacts.transcript || detail?.artifacts.plan)
+                            ? "Extract the script first — render needs the transcript."
+                            : "Generate B-roll first, then render the reel."}
+                      </p>
                     ) : null}
                   </div>
-                  <aside className="workspace-side">
-                    <PhoneVideo
-                      srcPath={
-                        projectId && detail?.artifacts.reel
-                          ? `/projects/${projectId}/artifacts/reel`
-                          : null
-                      }
-                      cacheKey={reelPreviewKey}
-                      emptyText="Render to preview your reel"
-                    />
+                  <aside className="workspace-side export-preview-carousel">
+                    {exportPreview === "cover" ? (
+                      <PhoneStill
+                        srcPath={
+                          projectId && detail?.artifacts.cover
+                            ? `/projects/${projectId}/artifacts/cover`
+                            : null
+                        }
+                        cacheKey={coverPreviewKey}
+                        emptyText="Generate cover to preview"
+                      />
+                    ) : (
+                      <PhoneVideo
+                        srcPath={
+                          projectId && detail?.artifacts.reel
+                            ? `/projects/${projectId}/artifacts/reel`
+                            : null
+                        }
+                        cacheKey={reelPreviewKey}
+                        emptyText="Render to preview your reel"
+                      />
+                    )}
+                    <div className="preview-switch" role="tablist" aria-label="Export preview">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={exportPreview === "reel"}
+                        className={`preview-switch-btn${exportPreview === "reel" ? " is-active" : ""}`}
+                        onClick={() => setExportPreview("reel")}
+                      >
+                        <span
+                          className={`preview-dot${exportPreview === "reel" ? " is-active" : ""}${
+                            detail?.artifacts.reel ? " has-media" : ""
+                          }`}
+                          aria-hidden
+                        />
+                        Reel
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={exportPreview === "cover"}
+                        className={`preview-switch-btn${exportPreview === "cover" ? " is-active" : ""}`}
+                        onClick={() => setExportPreview("cover")}
+                      >
+                        <span
+                          className={`preview-dot${exportPreview === "cover" ? " is-active" : ""}${
+                            detail?.artifacts.cover ? " has-media" : ""
+                          }`}
+                          aria-hidden
+                        />
+                        Cover
+                        {detail?.artifacts.cover ? (
+                          <span className="preview-ready" aria-label="Cover ready">
+                            ✓
+                          </span>
+                        ) : null}
+                      </button>
+                    </div>
                   </aside>
                 </div>
                 <div className="footer-bar">
-                  <button type="button" className="btn-text" onClick={() => setStep("broll")}>
+                  <button type="button" className="btn-text" onClick={() => goToStep("broll")}>
                     ← Back
                   </button>
-                  <button type="button" className="btn btn-ghost" onClick={() => setView("library")}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      clearFeedback();
+                      setView("library");
+                    }}
+                  >
                     Back to library
                   </button>
                 </div>
               </>
             ) : null}
 
-            {status ? <p className="status-line">{status}</p> : null}
-            {error ? <p className="error-line">{error}</p> : null}
+            {(status || error) && (
+              <div className="card-feedback" role="status" aria-live="polite">
+                {status ? <p className="status-line">{status}</p> : null}
+                {error ? <p className="error-line">{error}</p> : null}
+              </div>
+            )}
           </div>
         )}
       </main>

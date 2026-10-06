@@ -98,10 +98,6 @@ function InstagramPhone() {
           <div className="ig-reel">
             <img className="ig-reel-photo" src="/landing/phone.jpg" alt="" />
             <div className="ig-reel-shade" />
-            <div className="ig-safe-pill">
-              <span>ReelKut safe-zone</span>
-              <em>9:16 OK</em>
-            </div>
             <div className="ig-side">
               <div className="ig-avatar-ring">
                 <img className="ig-avatar" src="/landing/madi-avatar.jpg" alt="" />
@@ -211,14 +207,13 @@ export default function Landing({ onSignedIn }: Props) {
 
         <section className="landing-hero" id="enter">
           <div className="landing-hero-copy">
-            <h1 className="landing-logo-hero">ReelKut</h1>
-            <p className="landing-hero-line">
+            <h1 className="landing-hero-line">
               Turn raw takes into{" "}
               <span className="landing-highlight">paced reels</span>
-            </p>
+            </h1>
             <p className="landing-tagline">
-              For creators, coaches, and founders who shoot talking-head — lip-sync safe cuts and
-              retention B-roll, without rewriting a word.
+              Upload a face-to-camera clip. Get tighter cuts and B-roll on the lines you said, ready
+              to share.
             </p>
 
             {clerk ? (

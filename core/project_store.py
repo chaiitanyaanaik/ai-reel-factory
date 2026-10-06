@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -38,11 +38,6 @@ def get_project_dir(project_id: str) -> Path:
     return p
 
 
-def _slug(name: str) -> str:
-    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip()).strip("-").lower()
-    return s or f"project-{uuid.uuid4().hex[:8]}"
-
-
 def create_project(
     name: Optional[str] = None,
     topic: Optional[str] = None,
@@ -50,13 +45,9 @@ def create_project(
     owner_id: Optional[str] = None,
 ) -> ProjectManifest:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-    # Prefer UUID ids for multi-user; keep readable slug prefix when name given.
-    if name:
-        project_id = f"{_slug(name)}-{uuid.uuid4().hex[:6]}"
-    else:
-        project_id = f"project-{uuid.uuid4().hex[:10]}"
+    # Stable opaque id — display name is separate and editable.
+    project_id = f"project-{uuid.uuid4().hex[:10]}"
     project_dir = PROJECTS_DIR / project_id
-    # Extremely unlikely collision with UUID suffix; still guard.
     if project_dir.exists():
         project_id = f"project-{uuid.uuid4().hex[:12]}"
         project_dir = PROJECTS_DIR / project_id
@@ -65,7 +56,40 @@ def create_project(
         (project_dir / sub).mkdir(exist_ok=True)
     if topic:
         (project_dir / "topic.txt").write_text(topic.strip() + "\n", encoding="utf-8")
-    manifest = ProjectManifest(id=project_id, mode=mode, topic=topic, owner_id=owner_id)
+    display = (name or "").strip() or None
+    manifest = ProjectManifest(
+        id=project_id,
+        name=display,
+        mode=mode,
+        topic=topic,
+        owner_id=owner_id,
+    )
+    save_manifest(project_dir, manifest)
+    return manifest
+
+
+def update_project(
+    project_id: str,
+    *,
+    name: Optional[str] = None,
+    topic: Optional[str] = None,
+    update_name: bool = False,
+    update_topic: bool = False,
+) -> ProjectManifest:
+    """Update display fields without renaming the project directory."""
+    project_dir = get_project_dir(project_id)
+    manifest = load_manifest(project_dir)
+    if update_name:
+        cleaned = (name or "").strip() or None
+        manifest.name = cleaned
+    if update_topic:
+        cleaned_topic = (topic or "").strip() or None
+        manifest.topic = cleaned_topic
+        topic_path = project_dir / "topic.txt"
+        if cleaned_topic:
+            topic_path.write_text(cleaned_topic + "\n", encoding="utf-8")
+        elif topic_path.exists():
+            topic_path.unlink()
     save_manifest(project_dir, manifest)
     return manifest
 
@@ -139,6 +163,19 @@ def list_artifacts(project_dir: Path) -> dict[str, str]:
     return out
 
 
+def reel_exists(project_dir: Path) -> bool:
+    """True when final/reel.mp4 has been rendered."""
+    return (project_dir / "final" / "reel.mp4").is_file()
+
+
+def assert_sequence_unlocked(project_dir: Path) -> None:
+    """Block clip remove/reorder after the reel is finalized."""
+    if reel_exists(project_dir):
+        raise ValueError(
+            "This reel is finalized. Clip remove and reorder are locked."
+        )
+
+
 def list_projects(owner_id: Optional[str] = None) -> list[dict[str, Any]]:
     """
     Summaries for library UI, newest first.
@@ -172,6 +209,7 @@ def list_projects(owner_id: Optional[str] = None) -> list[dict[str, Any]]:
         rows.append(
             {
                 "id": manifest.id,
+                "name": manifest.name,
                 "mode": manifest.mode.value if hasattr(manifest.mode, "value") else manifest.mode,
                 "status": manifest.status.value if hasattr(manifest.status, "value") else manifest.status,
                 "topic": manifest.topic,
@@ -190,6 +228,8 @@ def list_projects(owner_id: Optional[str] = None) -> list[dict[str, Any]]:
 
 
 def list_clips(project_dir: Path) -> list[dict[str, Any]]:
+    from core.media_limits import probe_duration_seconds
+
     raw = project_dir / "raw_clips"
     if not raw.exists():
         return []
@@ -199,21 +239,37 @@ def list_clips(project_dir: Path) -> list[dict[str, Any]]:
     )
     out = []
     for i, f in enumerate(files, start=1):
+        duration: float | None
+        try:
+            duration = round(probe_duration_seconds(f), 3)
+        except RuntimeError:
+            duration = None
         out.append(
             {
                 "index": i,
                 "filename": f.name,
                 "size_bytes": f.stat().st_size,
+                "duration_seconds": duration,
                 "url": f"/projects/{project_dir.name}/clips/{f.name}",
             }
         )
     return out
 
 
+def total_clips_duration_seconds(project_dir: Path) -> float:
+    total = 0.0
+    for clip in list_clips(project_dir):
+        d = clip.get("duration_seconds")
+        if isinstance(d, (int, float)):
+            total += float(d)
+    return total
+
+
 def reorder_clips(project_dir: Path, order: list[str]) -> list[dict[str, Any]]:
     """
     Rename clips to 01.ext, 02.ext, ... matching the given current filenames order.
     """
+    assert_sequence_unlocked(project_dir)
     raw = project_dir / "raw_clips"
     raw.mkdir(parents=True, exist_ok=True)
     if not order:
@@ -257,3 +313,125 @@ def ensure_manifest(project_dir: Path) -> ProjectManifest:
         save_manifest(project_dir, m)
         return m
     return load_manifest(project_dir)
+
+
+def pipeline_derived_exists(project_dir: Path) -> bool:
+    """True if merge/script/broll/reel (or similar) already ran off current clips."""
+    arts = list_artifacts(project_dir)
+    if any(k in arts for k in ("merged", "enhanced", "transcript", "script", "plan", "reel", "cover")):
+        return True
+    for rel in (
+        "broll",
+        "cuts",
+        "subtitles",
+        "cover",
+        "final",
+        "merged",
+        "transcripts",
+    ):
+        p = project_dir / rel
+        if p.is_dir() and any(p.iterdir()):
+            return True
+    return False
+
+
+def invalidate_pipeline_after_clip_change(project_dir: Path) -> bool:
+    """
+    Clear derived pipeline outputs when raw clips change after extraction.
+    Returns True if anything was cleared.
+    """
+    cleared = False
+
+    def _rm(path: Path) -> None:
+        nonlocal cleared
+        if path.is_file():
+            path.unlink(missing_ok=True)
+            cleared = True
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            path.mkdir(parents=True, exist_ok=True)
+            cleared = True
+
+    for rel in (
+        "merged/merged.mp4",
+        "merged/enhanced.mp4",
+        "transcripts/transcript.json",
+        "raw_script.md",
+        "final_script.json",
+        "cuts/timeline.json",
+        "run_report.json",
+        "final/reel.mp4",
+        "final/cover.jpg",
+    ):
+        p = project_dir / rel
+        if p.exists():
+            p.unlink(missing_ok=True)
+            cleared = True
+
+    for rel in ("broll", "cuts", "subtitles", "cover", "final", "merged", "transcripts"):
+        p = project_dir / rel
+        if p.is_dir() and any(p.iterdir()):
+            _rm(p)
+
+    # Recreate expected empty dirs
+    for sub in PROJECT_SUBDIRS:
+        (project_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    try:
+        update_manifest(
+            project_dir,
+            status=JobStatus.pending,
+            current_stage=None,
+            last_job_id=None,
+            error=None,
+            artifacts={},
+        )
+        cleared = True
+    except Exception:
+        pass
+    return cleared
+
+
+def delete_clip(project_dir: Path, filename: str) -> dict[str, Any]:
+    """
+    Remove one uploaded clip, renumber remaining 01…, invalidate downstream if needed.
+    """
+    assert_sequence_unlocked(project_dir)
+    safe = Path(filename).name
+    raw = project_dir / "raw_clips"
+    target = raw / safe
+    if not target.is_file():
+        raise FileNotFoundError(f"Clip not found: {safe}")
+
+    had_derived = pipeline_derived_exists(project_dir)
+    target.unlink(missing_ok=True)
+
+    remaining = sorted(
+        [p for p in raw.iterdir() if p.suffix.lower() in (".mp4", ".mov") and p.is_file()],
+        key=lambda p: p.name.lower(),
+    )
+    if remaining:
+        reorder_clips(project_dir, [p.name for p in remaining])
+    else:
+        # No clips left — still wipe derived outputs if any
+        pass
+
+    invalidated = False
+    if had_derived:
+        invalidated = invalidate_pipeline_after_clip_change(project_dir)
+
+    return {
+        "clips": list_clips(project_dir),
+        "invalidated": invalidated or had_derived,
+    }
+
+
+def delete_project(project_id: str) -> None:
+    """Permanently remove a project directory (caller must enforce ownership)."""
+    project_dir = get_project_dir(project_id)
+    # Guard: only delete under PROJECTS_DIR
+    resolved = project_dir.resolve()
+    root = PROJECTS_DIR.resolve()
+    if resolved == root or root not in resolved.parents:
+        raise ValueError(f"Refusing to delete outside projects dir: {project_id}")
+    shutil.rmtree(resolved)

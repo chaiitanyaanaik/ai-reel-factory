@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
 # Git / IDE
 .git
@@ -17,14 +20,14 @@ __pycache__
 *.py[cod]
 .pytest_cache
 *.egg-info
-dist
-build
+# Root-only build artifacts (do NOT ignore frontend/dist)
+/dist
+/build
 
-# Frontend (API image does not need these)
+# Frontend deps — keep frontend/dist for the combined studio image
 frontend/node_modules
-frontend/dist
 
-# Runtime / generated data (mounted at run time)
+# Runtime data (mounted at CapRover)
 projects
 
 # Local noise

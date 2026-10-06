@@ -1,0 +1,28 @@
+# Heavy deps only — rebuild rarely, push to Docker Hub once.
+#   docker build -f Dockerfile.base --platform linux/amd64 \
+#     -t chaiitanyaanaik/reelkut-base:latest .
+#   docker push chaiitanyaanaik/reelkut-base:latest
+#
+# No app code or secrets in this image.
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+# CPU-only Torch so openai-whisper does not pull NVIDIA/CUDA wheels
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      torch torchaudio \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Warm Whisper weights into the image (optional; speeds first request)
+RUN python -c "import whisper; whisper.load_model('base')" || true
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app

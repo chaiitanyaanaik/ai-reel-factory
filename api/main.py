@@ -30,18 +30,28 @@ from core.auth import (
 from core.config import load_env
 from core.project_store import (
     create_project,
+    delete_clip,
     get_project_dir,
     list_artifacts,
     list_clips,
+    delete_project,
     list_projects,
     load_manifest,
     load_run_report,
     reorder_clips,
+    update_project,
 )
-from core.usage_limits import assert_under_limit, check_and_increment, usage_snapshot
+from core.usage_limits import (
+    assert_free_project_quota,
+    assert_under_limit,
+    check_and_increment,
+    record_project_created,
+    usage_snapshot,
+)
 from jobs import runner
 from schemas.models import (
     AuthLoginRequest,
+    AuthSyncRequest,
     AuthTokenResponse,
     AuthUser,
     BrandProfile,
@@ -49,6 +59,7 @@ from schemas.models import (
     JobRequest,
     ProjectCreate,
     ProjectManifest,
+    ProjectUpdate,
 )
 
 load_env()
@@ -97,6 +108,10 @@ class ClipOrderRequest(BaseModel):
     order: list[str] = Field(..., min_length=1, description="Current filenames in desired sequence")
 
 
+class ClipRemoveRequest(BaseModel):
+    filename: str = Field(..., min_length=1, description="Clip filename to remove (e.g. 01.mp4)")
+
+
 def _owned_project(project_id: str, user: CurrentUser) -> Path:
     try:
         project_dir = get_project_dir(project_id)
@@ -109,21 +124,81 @@ def _owned_project(project_id: str, user: CurrentUser) -> Path:
 
 @app.get("/health")
 def health():
+    from core.media_limits import max_clip_duration_seconds, max_project_duration_seconds
+
     return {
         "status": "ok",
+        "service": "reelkut-api",
         "auth_mode": auth_mode(),
         "auth_required": auth_required(),
+        "max_clip_duration_seconds": max_clip_duration_seconds(),
+        "max_project_duration_seconds": max_project_duration_seconds(),
     }
+
+
+# --- SPA (frontend/dist baked into the image for studio.reelkut.com) ---
+_STATIC_DIR = ROOT / "frontend" / "dist"
+
+
+def _spa_index() -> FileResponse:
+    index = _STATIC_DIR / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="Frontend not built into this image")
+    return FileResponse(index)
+
+
+@app.get("/")
+def spa_root():
+    """Serve the studio UI when dist is present; otherwise API status JSON."""
+    if (_STATIC_DIR / "index.html").is_file():
+        return _spa_index()
+    return health()
+
+
+
+def _auth_user_response(user: CurrentUser) -> AuthUser:
+    from core.admin_users import is_admin
+    from core.user_profiles import load_profile, touch_user_profile
+
+    # Prefer JWT email; keep any previously synced profile email when JWT omits it.
+    prof = load_profile(user.id) or {}
+    email = (user.email or "").strip() or str(prof.get("email") or "")
+    name = user.name if user.name is not None else prof.get("name")
+    touch_user_profile(user_id=user.id, email=email, name=name)
+    return AuthUser(
+        id=user.id,
+        email=email,
+        name=name if isinstance(name, str) else user.name,
+        is_admin=is_admin(user),
+    )
 
 
 @app.get("/auth/usage")
 def auth_usage(user: Annotated[CurrentUser, Depends(get_current_user)]):
-    return usage_snapshot(user.id)
+    me = _auth_user_response(user)
+    snap = usage_snapshot(user.id, email=me.email)
+    snap["is_admin"] = me.is_admin
+    return snap
+
+
+@app.post("/auth/sync", response_model=AuthUser)
+def auth_sync(
+    body: AuthSyncRequest,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    """Store Clerk client email/name on the user profile (for admin gate + directory)."""
+    from core.user_profiles import touch_user_profile
+
+    email = body.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    touch_user_profile(user_id=user.id, email=email, name=body.name)
+    return _auth_user_response(user)
 
 
 @app.get("/auth/me", response_model=AuthUser)
 def auth_me(user: Annotated[CurrentUser, Depends(get_current_user)]):
-    return AuthUser(id=user.id, email=user.email, name=user.name)
+    return _auth_user_response(user)
 
 
 @app.get("/auth/brand", response_model=BrandProfile)
@@ -184,9 +259,18 @@ def auth_login(body: AuthLoginRequest, response: Response):
         secure=cookie_secure(),
         max_age=int(os.environ.get("AUTH_TOKEN_TTL_SECONDS", "604800") or 604800),
     )
+    from core.admin_users import is_admin
+    from core.user_profiles import touch_user_profile
+
+    touch_user_profile(user_id=user.id, email=user.email, name=user.name)
     return AuthTokenResponse(
         access_token=token,
-        user=AuthUser(id=user.id, email=user.email, name=user.name),
+        user=AuthUser(
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            is_admin=is_admin(user),
+        ),
     )
 
 
@@ -201,6 +285,64 @@ def auth_logout(response: Response):
     return {"ok": True}
 
 
+class AdminEntitlementBody(BaseModel):
+    plan: str = Field(..., description="free or paid")
+    project_limit: Optional[int] = Field(
+        default=None,
+        description="Lifetime project cap; null = unlimited when paid, or free default when free",
+    )
+    notes: str = ""
+
+
+class AdminByEmailBody(AdminEntitlementBody):
+    email: str = Field(..., min_length=3)
+
+
+@app.get("/admin/users")
+def admin_list_users(user: Annotated[CurrentUser, Depends(get_current_user)]):
+    from core.admin_users import list_admin_users, require_admin
+
+    require_admin(user)
+    return {"users": list_admin_users()}
+
+
+@app.patch("/admin/users/{user_id}")
+def admin_patch_user(
+    user_id: str,
+    body: AdminEntitlementBody,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    from core.admin_users import patch_user_entitlement, require_admin
+
+    require_admin(user)
+    ent = patch_user_entitlement(
+        user_id=user_id,
+        plan=body.plan,
+        project_limit=body.project_limit,
+        notes=body.notes,
+        updated_by=user.email,
+    )
+    return {"ok": True, "entitlement": ent}
+
+
+@app.put("/admin/users/by-email")
+def admin_upsert_by_email(
+    body: AdminByEmailBody,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    from core.admin_users import require_admin, upsert_by_email
+
+    require_admin(user)
+    ent = upsert_by_email(
+        email=body.email,
+        plan=body.plan,
+        project_limit=body.project_limit,
+        notes=body.notes,
+        updated_by=user.email,
+    )
+    return {"ok": True, "entitlement": ent}
+
+
 @app.get("/projects")
 def api_list_projects(user: Annotated[CurrentUser, Depends(get_current_user)]):
     if auth_required():
@@ -213,6 +355,7 @@ def api_create_project(
     body: ProjectCreate,
     user: Annotated[CurrentUser, Depends(get_current_user)],
 ):
+    assert_free_project_quota(user.id, email=user.email)
     assert_under_limit(user.id, "project_create")
     try:
         manifest = create_project(
@@ -223,6 +366,7 @@ def api_create_project(
         )
     except FileExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    record_project_created(user.id)
     check_and_increment(user.id, "project_create")
     return manifest
 
@@ -251,6 +395,41 @@ def api_get_project(
     }
 
 
+@app.patch("/projects/{project_id}", response_model=ProjectManifest)
+@app.put("/projects/{project_id}", response_model=ProjectManifest)
+def api_patch_project(
+    project_id: str,
+    body: ProjectUpdate,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    _owned_project(project_id, user)
+    fields = body.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    return update_project(
+        project_id,
+        name=fields.get("name"),
+        topic=fields.get("topic"),
+        update_name="name" in fields,
+        update_topic="topic" in fields,
+    )
+
+
+@app.delete("/projects/{project_id}")
+def api_delete_project(
+    project_id: str,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    _owned_project(project_id, user)
+    try:
+        delete_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "deleted": project_id}
+
+
 @app.get("/projects/{project_id}/clips")
 def api_list_clips(
     project_id: str,
@@ -272,7 +451,9 @@ def api_reorder_clips(
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        detail = str(e)
+        code = 409 if "finalized" in detail.lower() else 400
+        raise HTTPException(status_code=code, detail=detail) from e
     return {"project_id": project_id, "clips": clips}
 
 
@@ -286,7 +467,15 @@ async def api_upload_clips(
     """
     Upload clips in request order → saved as 01.ext, 02.ext, ...
     Set replace=true to clear existing raw_clips first.
+    Enforces max per-clip and total project duration (default 180s each).
     """
+    from core.media_limits import (
+        max_clip_duration_seconds,
+        max_project_duration_seconds,
+        probe_duration_seconds,
+    )
+    from core.project_store import total_clips_duration_seconds
+
     project_dir = _owned_project(project_id, user)
 
     clips_dir = project_dir / "raw_clips"
@@ -297,24 +486,87 @@ async def api_upload_clips(
 
     existing = list_clips(project_dir)
     start = 1 if replace or not existing else (existing[-1]["index"] + 1)
+    max_clip = max_clip_duration_seconds()
+    max_total = max_project_duration_seconds()
+    running_total = 0.0 if replace else total_clips_duration_seconds(project_dir)
 
-    saved = []
-    for offset, upload in enumerate(files):
-        i = start + offset
-        original = upload.filename or f"{i:02d}.mp4"
-        suffix = Path(original).suffix.lower() or ".mp4"
-        if suffix not in (".mp4", ".mov"):
-            suffix = ".mp4"
-        name = f"{i:02d}{suffix}"
-        dest = clips_dir / name
-        data = await upload.read()
-        dest.write_bytes(data)
-        saved.append(name)
+    saved: list[str] = []
+    written: list[Path] = []
+    try:
+        for offset, upload in enumerate(files):
+            i = start + offset
+            original = upload.filename or f"{i:02d}.mp4"
+            suffix = Path(original).suffix.lower() or ".mp4"
+            if suffix not in (".mp4", ".mov"):
+                suffix = ".mp4"
+            name = f"{i:02d}{suffix}"
+            dest = clips_dir / name
+            data = await upload.read()
+            dest.write_bytes(data)
+            written.append(dest)
+
+            try:
+                duration = probe_duration_seconds(dest)
+            except RuntimeError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not read duration for “{original}”: {e}",
+                ) from e
+
+            if duration > max_clip + 0.05:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Video length can't be more than {max_clip} seconds.",
+                )
+
+            if running_total + duration > max_total + 0.05:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Video length can't be more than {max_total} seconds.",
+                )
+
+            running_total += duration
+            saved.append(name)
+    except HTTPException:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
 
     return {
         "project_id": project_id,
         "saved": saved,
         "clips": list_clips(project_dir),
+        "total_duration_seconds": round(running_total, 3),
+        "max_clip_duration_seconds": max_clip,
+        "max_project_duration_seconds": max_total,
+    }
+
+
+@app.post("/projects/{project_id}/clips/remove")
+def api_remove_clip(
+    project_id: str,
+    body: ClipRemoveRequest,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    """
+    Remove a clip (POST — preferred; some proxies return 405 for DELETE).
+    Renumbers remaining clips and clears derived script/b-roll/reel if present.
+    """
+    project_dir = _owned_project(project_id, user)
+    safe = Path(body.filename).name
+    try:
+        result = delete_clip(project_dir, safe)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        detail = str(e)
+        code = 409 if "finalized" in detail.lower() else 400
+        raise HTTPException(status_code=code, detail=detail) from e
+    return {
+        "project_id": project_id,
+        "deleted": safe,
+        "clips": result["clips"],
+        "invalidated": result["invalidated"],
     }
 
 
@@ -331,6 +583,34 @@ def api_clip_file(
         raise HTTPException(status_code=404, detail="Clip not found")
     media = "video/quicktime" if path.suffix.lower() == ".mov" else "video/mp4"
     return FileResponse(path, media_type=media, filename=safe)
+
+
+@app.delete("/projects/{project_id}/clips/{filename}")
+def api_delete_clip(
+    project_id: str,
+    filename: str,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    """
+    Remove a clip and renumber the rest.
+    If script/merge/reel already existed, clears those derived outputs so the
+    user must re-run extraction on the new sequence.
+    """
+    project_dir = _owned_project(project_id, user)
+    try:
+        result = delete_clip(project_dir, filename)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        detail = str(e)
+        code = 409 if "finalized" in detail.lower() else 400
+        raise HTTPException(status_code=code, detail=detail) from e
+    return {
+        "project_id": project_id,
+        "deleted": Path(filename).name,
+        "clips": result["clips"],
+        "invalidated": result["invalidated"],
+    }
 
 
 @app.get("/projects/{project_id}/script", response_class=PlainTextResponse)
@@ -532,6 +812,25 @@ def api_artifact(
     if path.suffix in (".jpg", ".jpeg"):
         media = "image/jpeg"
     return FileResponse(path, media_type=media, filename=path.name)
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    """Client-side routes + static assets from frontend/dist (registered last)."""
+    if not (_STATIC_DIR / "index.html").is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    # Never treat API prefixes as SPA (safety if a method/path slipped through)
+    first = (full_path or "").split("/", 1)[0]
+    if first in ("auth", "projects", "health", "docs", "openapi.json", "redoc"):
+        raise HTTPException(status_code=404, detail="Not found")
+    candidate = (_STATIC_DIR / full_path).resolve()
+    try:
+        candidate.relative_to(_STATIC_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    if candidate.is_file():
+        return FileResponse(candidate)
+    return _spa_index()
 
 
 def main():

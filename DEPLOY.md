@@ -231,9 +231,72 @@ sudo systemctl reload nginx
 
 ---
 
+## CapRover — persistent projects volume (required)
+
+ReelKut stores **all user media and quota state** under `/app/projects` inside the container:
+
+| Path | Contents |
+|------|----------|
+| `/app/projects/project-*/` | Clips, transcripts, B-roll, `final/reel.mp4`, covers |
+| `/app/projects/.usage/` | Daily rate limits + **lifetime** project counters |
+| `/app/projects/.users/` | Brand profiles + plan entitlements (Admin) |
+
+The image declares `VOLUME ["/app/projects"]`. **Without a CapRover persistent directory, every redeploy wipes videos and quotas.**
+
+### Configure (studio app)
+
+1. CapRover → **Apps** → your API/studio app → **App Configs** → **Persistent Directories**
+2. Add:
+   - **Path in App**: `/app/projects`
+   - Label (optional): `projects`
+3. **Save & Update** (redeploy)
+
+### Smoke test after mount
+
+1. Sign in → Create cut → upload a short clip  
+2. Confirm the project appears in Library  
+3. **Redeploy** the app (or Save & Update again)  
+4. Sign in again — same project, clip, and (if present) reel must still load  
+5. Admin entitlement edits must also survive (same volume)
+
+### Backup (simple)
+
+On the CapRover host (path may vary; CapRover usually keeps app volumes under `/captain/data/…`):
+
+```bash
+# Find the volume mount for /app/projects, then e.g.:
+sudo tar -czf reelkut-projects-$(date +%Y%m%d).tgz -C /path/to/projects .
+# Or: rsync -a /path/to/projects/ /backup/reelkut-projects/
+```
+
+Restore by extracting into the same persistent directory and redeploying.
+
+---
+
+## CapRover — free-tier / admin env
+
+Set these on the **studio** (API) app → **App Configs** → **Environmental Variables**:
+
+```bash
+FREE_PROJECT_LIMIT=3
+ADMIN_USER_IDS=user_xxxxxxxx   # your Clerk user id (most reliable)
+# Optional bootstrap unlimited (prefer Admin portal after first login):
+# UNLIMITED_USER_IDS=user_xxxxxxxx
+# ADMIN_EMAILS only works if email is in the Clerk session JWT
+```
+
+Verify:
+
+1. Free user: create 3 projects → 4th blocked with upgrade message  
+2. Admin → mark user **paid** → create works again  
+3. Delete a free project → lifetime counter still blocks (delete does not reset)
+
+---
+
 ## Cost / safety notes
 
 - Whisper + Veo = CPU + Google spend. Keep rate limits on.
 - Separate Google key for prod; set a billing budget alert.
 - Security group: SSH = your IP only.
 - `.env` and `frontend/.env.production.local` stay on the server only.
+- CapRover: persistent `/app/projects` + `FREE_PROJECT_LIMIT=3` before public traffic.

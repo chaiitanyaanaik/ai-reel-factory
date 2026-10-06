@@ -11,6 +11,73 @@ type Props = {
   cacheKey?: string | number;
 };
 
+/** Phone mockup still image (e.g. cover.jpg) loaded via authenticated fetch. */
+export function PhoneStill({
+  srcPath,
+  emptyText = "Nothing to preview yet",
+  cacheKey = "",
+}: {
+  srcPath?: string | null;
+  emptyText?: string;
+  cacheKey?: string | number;
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let created: string | null = null;
+
+    setLoadError("");
+    if (!srcPath) {
+      setBlobUrl(null);
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setLoading(true);
+    setBlobUrl(null);
+    (async () => {
+      try {
+        const url = await fetchMediaObjectUrl(srcPath);
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        created = url;
+        setBlobUrl(url);
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError(String((e as Error).message || e));
+          setBlobUrl(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [srcPath, cacheKey]);
+
+  return (
+    <div className="phone phone-still">
+      {blobUrl && !loadError ? (
+        <img src={blobUrl} alt="Cover preview" />
+      ) : (
+        <div className="phone-empty">
+          {loading ? "Loading preview…" : loadError ? "Preview unavailable" : emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Phone mockup video with authenticated load, play/pause, and volume controls.
  * Used on upload, B-roll, and final export screens.

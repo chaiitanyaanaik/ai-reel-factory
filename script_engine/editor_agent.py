@@ -47,6 +47,7 @@ def build_editor_prompt(
     total_duration: float,
     rules: EditorRules,
 ) -> str:
+    refs_block = f"## Reference Material\n{refs}" if refs else ""
     return f"""You are a senior Instagram Reel EDITOR (not a copywriter).
 You receive a VERBATIM speech transcript with times.
 Plan an edit: when we see the SPEAKER (aroll) vs B-roll cutaways.
@@ -88,7 +89,7 @@ Do NOT change spoken words.
 ## Timed segments
 {segment_summary}
 
-{f"## Reference Material\\n{refs}" if refs else ""}
+{refs_block}
 
 {style}
 

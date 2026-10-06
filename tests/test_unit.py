@@ -126,10 +126,74 @@ def test_create_project_and_manifest(tmp_path, monkeypatch):
     from schemas.models import PipelineMode
 
     m = ps.create_project(name="demo", topic="fitness tips", mode=PipelineMode.video_first)
-    assert m.id.startswith("demo-")
+    assert m.id.startswith("project-")
+    assert m.name == "demo"
     assert (tmp_path / m.id / "raw_clips").is_dir()
     assert (tmp_path / m.id / "project.json").exists()
     assert (tmp_path / m.id / "topic.txt").read_text().strip() == "fitness tips"
+
+    updated = ps.update_project(m.id, name="Demo Reel", update_name=True)
+    assert updated.id == m.id
+    assert updated.name == "Demo Reel"
+    assert (tmp_path / m.id).is_dir()
+
+
+def test_delete_clip_invalidates_script(tmp_path, monkeypatch):
+    import core.project_store as ps
+    from schemas.models import PipelineMode
+
+    monkeypatch.setattr(ps, "PROJECTS_DIR", tmp_path)
+    m = ps.create_project(name="clips", mode=PipelineMode.video_first)
+    root = tmp_path / m.id
+    raw = root / "raw_clips"
+    (raw / "01.mp4").write_bytes(b"a")
+    (raw / "02.mp4").write_bytes(b"b")
+    (root / "raw_script.md").write_text("hello\n", encoding="utf-8")
+    (root / "final_script.json").write_text('{"beats":[]}\n', encoding="utf-8")
+    (root / "merged").mkdir(exist_ok=True)
+    (root / "merged" / "merged.mp4").write_bytes(b"m")
+
+    result = ps.delete_clip(root, "01.mp4")
+    assert result["invalidated"] is True
+    assert len(result["clips"]) == 1
+    assert result["clips"][0]["filename"] == "01.mp4"  # renumbered
+    assert not (root / "raw_script.md").exists()
+    assert not (root / "final_script.json").exists()
+    assert not (root / "merged" / "merged.mp4").exists()
+
+
+def test_broll_edit_prompt_safety():
+    from video_engine.prompt_safety import assert_safe_broll_edit, looks_unsafe_edit
+
+    assert looks_unsafe_edit("make it warmer and slower") is False
+    assert looks_unsafe_edit("add nude lighting") is True
+    try:
+        assert_safe_broll_edit("generate porn style b-roll")
+        raise AssertionError("expected ValueError")
+    except ValueError as e:
+        assert "isn't allowed" in str(e)
+
+
+def test_sequence_locked_after_reel(tmp_path, monkeypatch):
+    import core.project_store as ps
+    import pytest
+    from schemas.models import PipelineMode
+
+    monkeypatch.setattr(ps, "PROJECTS_DIR", tmp_path)
+    m = ps.create_project(name="locked", mode=PipelineMode.video_first)
+    root = tmp_path / m.id
+    raw = root / "raw_clips"
+    (raw / "01.mp4").write_bytes(b"a")
+    (raw / "02.mp4").write_bytes(b"b")
+    (root / "final").mkdir(exist_ok=True)
+    (root / "final" / "reel.mp4").write_bytes(b"r")
+
+    with pytest.raises(ValueError, match="finalized"):
+        ps.delete_clip(root, "01.mp4")
+    with pytest.raises(ValueError, match="finalized"):
+        ps.reorder_clips(root, ["02.mp4", "01.mp4"])
+    assert (raw / "01.mp4").exists()
+    assert (raw / "02.mp4").exists()
 
 
 def test_veo_prompt_includes_spoken_line_and_skips_avoid():
@@ -268,3 +332,157 @@ def test_usage_daily_limit(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         ul.check_and_increment("usr_x", "job")
     assert ei.value.status_code == 429
+
+
+def test_free_project_quota(tmp_path, monkeypatch):
+    import core.project_store as ps
+    import core.usage_limits as ul
+    from fastapi import HTTPException
+    from schemas.models import PipelineMode
+
+    monkeypatch.setattr(ps, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr(ul, "_USAGE_DIR", tmp_path / ".usage")
+    monkeypatch.setenv("FREE_PROJECT_LIMIT", "3")
+    monkeypatch.delenv("UNLIMITED_USER_IDS", raising=False)
+    monkeypatch.delenv("UNLIMITED_USER_EMAILS", raising=False)
+
+    for name in ("one", "two", "three"):
+        ps.create_project(name=name, mode=PipelineMode.video_first, owner_id="usr_free")
+        ul.record_project_created("usr_free")
+
+    with pytest.raises(HTTPException) as ei:
+        ul.assert_free_project_quota("usr_free", email="free@test.local")
+    assert ei.value.status_code == 402
+    assert "Upgrade" in str(ei.value.detail)
+
+    # Delete does not reset lifetime quota
+    first = next(p for p in tmp_path.iterdir() if p.is_dir() and p.name != ".usage")
+    ps.delete_project(first.name)
+    with pytest.raises(HTTPException) as ei2:
+        ul.assert_free_project_quota("usr_free", email="free@test.local")
+    assert ei2.value.status_code == 402
+
+    monkeypatch.setenv("UNLIMITED_USER_EMAILS", "vip@test.local")
+    ul.assert_free_project_quota("usr_vip", email="vip@test.local")
+
+    snap = ul.usage_snapshot("usr_free", email="free@test.local")
+    assert snap["projects"]["used"] == 3
+    assert snap["projects"]["limit"] == 3
+    assert snap["projects"]["plan"] == "free"
+
+
+def test_entitlement_paid_and_custom_limit(tmp_path, monkeypatch):
+    import core.entitlements as ent
+    import core.usage_limits as ul
+    import core.user_profiles as up
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(up, "USERS_DIR", tmp_path / ".users")
+    monkeypatch.setattr(up, "PENDING_EMAIL_DIR", tmp_path / ".users" / "_by_email")
+    monkeypatch.setattr(ent, "USERS_DIR", tmp_path / ".users")
+    monkeypatch.setattr(ent, "PENDING_EMAIL_DIR", tmp_path / ".users" / "_by_email")
+    monkeypatch.setattr(ul, "_USAGE_DIR", tmp_path / ".usage")
+    monkeypatch.setenv("FREE_PROJECT_LIMIT", "3")
+    monkeypatch.delenv("UNLIMITED_USER_IDS", raising=False)
+    monkeypatch.delenv("UNLIMITED_USER_EMAILS", raising=False)
+
+    ent.save_entitlement(
+        user_id="usr_paid",
+        email="paid@test.local",
+        plan="paid",
+        project_limit=None,
+        updated_by="admin@test.local",
+    )
+    ul.assert_free_project_quota("usr_paid", email="paid@test.local")
+    q = ent.resolve_project_quota("usr_paid", "paid@test.local")
+    assert q.unlimited is True
+    assert q.plan == "paid"
+
+    ent.save_entitlement(
+        user_id="usr_custom",
+        email="custom@test.local",
+        plan="free",
+        project_limit=1,
+        updated_by="admin@test.local",
+    )
+    ul.record_project_created("usr_custom")  # seeds/increments lifetime
+    # Force lifetime to 1
+    path = ul._lifetime_path("usr_custom")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"projects_created": 1}\n', encoding="utf-8")
+    with pytest.raises(HTTPException) as ei:
+        ul.assert_free_project_quota("usr_custom", email="custom@test.local")
+    assert ei.value.status_code == 402
+
+
+def test_pending_email_entitlement_binds_on_touch(tmp_path, monkeypatch):
+    import core.entitlements as ent
+    import core.user_profiles as up
+
+    monkeypatch.setattr(up, "USERS_DIR", tmp_path / ".users")
+    monkeypatch.setattr(up, "PENDING_EMAIL_DIR", tmp_path / ".users" / "_by_email")
+    monkeypatch.setattr(ent, "USERS_DIR", tmp_path / ".users")
+    monkeypatch.setattr(ent, "PENDING_EMAIL_DIR", tmp_path / ".users" / "_by_email")
+
+    ent.save_entitlement(
+        user_id=None,
+        email="soon@test.local",
+        plan="paid",
+        project_limit=None,
+        updated_by="admin@test.local",
+    )
+    assert ent.load_entitlement(email="soon@test.local")["plan"] == "paid"
+
+    up.touch_user_profile(user_id="user_clerk_1", email="soon@test.local", name="Soon")
+    bound = ent.load_entitlement(user_id="user_clerk_1")
+    assert bound is not None
+    assert bound["plan"] == "paid"
+    assert bound["user_id"] == "user_clerk_1"
+    assert not ent.pending_entitlement_path("soon@test.local").exists()
+
+
+def test_require_admin_404(tmp_path, monkeypatch):
+    import core.user_profiles as up
+    from core.admin_users import require_admin
+    from core.auth import CurrentUser
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(up, "USERS_DIR", tmp_path / ".users")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@test.local")
+    monkeypatch.delenv("ADMIN_USER_IDS", raising=False)
+    admin = CurrentUser(id="a1", email="boss@test.local", name="Boss")
+    assert require_admin(admin).email == "boss@test.local"
+
+    peon = CurrentUser(id="a2", email="peon@test.local", name="Peon")
+    with pytest.raises(HTTPException) as ei:
+        require_admin(peon)
+    assert ei.value.status_code == 404
+
+
+def test_admin_ignores_spoofed_profile_email(tmp_path, monkeypatch):
+    import core.user_profiles as up
+    from core.admin_users import is_admin
+    from core.auth import CurrentUser
+
+    monkeypatch.setattr(up, "USERS_DIR", tmp_path / ".users")
+    monkeypatch.setenv("ADMIN_EMAILS", "chaiitanyaanaik@gmail.com")
+    monkeypatch.delenv("ADMIN_USER_IDS", raising=False)
+
+    # Spoofed profile must NOT grant admin when JWT email is empty/different
+    up.touch_user_profile(
+        user_id="user_attacker",
+        email="chaiitanyaanaik@gmail.com",
+        name="Nope",
+    )
+    assert is_admin(CurrentUser(id="user_attacker", email="", name=None)) is False
+    assert is_admin(CurrentUser(id="user_attacker", email="evil@test.local", name=None)) is False
+
+    # Verified JWT email matches allowlist
+    assert is_admin(
+        CurrentUser(id="user_real", email="chaiitanyaanaik@gmail.com", name=None)
+    ) is True
+
+    monkeypatch.setenv("ADMIN_EMAILS", "")
+    monkeypatch.setenv("ADMIN_USER_IDS", "user_abc")
+    assert is_admin(CurrentUser(id="user_abc", email="", name=None)) is True
+    assert is_admin(CurrentUser(id="user_other", email="", name=None)) is False

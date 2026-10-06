@@ -28,13 +28,18 @@ class JobStatus(str, Enum):
 class ProjectCreate(BaseModel):
     name: Optional[str] = Field(
         default=None,
-        description="Optional project folder name; auto-generated if omitted",
+        description="Optional display name (id stays project-<uuid>)",
     )
     topic: Optional[str] = Field(
         default=None,
         description="Optional intent text (not spoken dialogue)",
     )
     mode: PipelineMode = PipelineMode.video_first
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, description="Display name")
+    topic: Optional[str] = Field(default=None, description="Intent / B-roll theme")
 
 
 class Beat(BaseModel):
@@ -157,6 +162,10 @@ class JobRequest(BaseModel):
 
 class ProjectManifest(BaseModel):
     id: str
+    name: Optional[str] = Field(
+        default=None,
+        description="Editable display name; folder id stays immutable",
+    )
     mode: PipelineMode = PipelineMode.video_first
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -177,10 +186,18 @@ class AuthLoginRequest(BaseModel):
     name: Optional[str] = Field(default=None, description="Optional display name")
 
 
+class AuthSyncRequest(BaseModel):
+    """Clerk client email/name — session tokens often omit email claims."""
+
+    email: str = Field(..., min_length=3)
+    name: Optional[str] = None
+
+
 class AuthUser(BaseModel):
     id: str
     email: str
     name: Optional[str] = None
+    is_admin: bool = False
 
 
 class AuthTokenResponse(BaseModel):

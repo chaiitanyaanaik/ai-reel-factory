@@ -9,6 +9,11 @@ from core.tracing import observe
 from schemas.models import BrollClipMeta
 from video_engine import broll_meta
 from video_engine.broll import _veo_clip_seconds
+from video_engine.prompt_safety import (
+    UNSAFE_EDIT_MESSAGE,
+    assert_safe_broll_edit,
+    rewrite_looks_like_refusal,
+)
 from video_engine.veo_client import generate_video
 
 CATEGORY_REGENERATE = "broll_regenerate"
@@ -40,7 +45,10 @@ def rewrite_prompt_for_edit(
     prompt = (
         "You revise a Veo video-generation prompt for one B-roll cutaway.\n"
         "Keep the same subject and framing unless the user asks to change them.\n"
-        "Apply the user's latest edit. Output ONLY the full new prompt, no explanation.\n\n"
+        "Apply the user's latest edit. Output ONLY the full new prompt, no explanation.\n"
+        "Safety: never produce sexual, nude, pornographic, erotic, gory, hateful, "
+        "abusive, or otherwise obscene content. If the user's edit asks for that, "
+        "reply with exactly: UNSAFE_EDIT\n\n"
         f"Current Veo prompt:\n{meta.full_prompt or meta.suggestion}\n\n"
         f"Original timeline suggestion:\n{meta.suggestion}\n\n"
         f"Spoken line context:\n{meta.spoken_text or '(none)'}\n\n"
@@ -67,6 +75,7 @@ def edit_broll_clip(
     message = (message or "").strip()
     if not message:
         raise ValueError("message is required")
+    assert_safe_broll_edit(message)
 
     video = broll_meta.clip_path(project_dir, idx)
     if not video.exists():
@@ -109,6 +118,11 @@ def edit_broll_clip(
         )
         if not new_prompt:
             raise RuntimeError("Prompt rewrite returned empty")
+        if (
+            new_prompt.strip().upper() == "UNSAFE_EDIT"
+            or rewrite_looks_like_refusal(new_prompt)
+        ):
+            raise ValueError(UNSAFE_EDIT_MESSAGE)
 
         broll_meta.archive_current_clip(project_dir, idx)
 

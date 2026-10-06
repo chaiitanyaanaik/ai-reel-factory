@@ -1,0 +1,22 @@
+# CapRover SPA image — package a pre-built frontend/dist (no Node build in Docker).
+#
+# Why: `docker build --platform linux/amd64` on Apple Silicon often kills esbuild (OOM).
+# Build the Vite app on the host, then copy dist into nginx.
+#
+# PUBLIC Hub image — never include secrets:
+#   OK:  pk_live_/pk_test_ already baked into dist by Vite (browser-safe)
+#   NEVER: sk_*, AUTH_SECRET, GOOGLE_API_KEY, .env files
+#
+# Host:
+#   cd frontend
+#   export VITE_CLERK_PUBLISHABLE_KEY=pk_live_...   # do not commit
+#   npm ci && npm run build
+#   cd ..
+#   docker build -f frontend/Dockerfile.caprover --platform linux/amd64 \
+#     -t chaiitanyaanaik/frontend:latest .
+#   docker push chaiitanyaanaik/frontend:latest
+
+FROM nginx:1.27-alpine
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY frontend/dist /usr/share/nginx/html
+EXPOSE 80
