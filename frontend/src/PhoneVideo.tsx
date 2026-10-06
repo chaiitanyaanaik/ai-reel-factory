@@ -6,6 +6,8 @@ type Props = {
   srcPath?: string | null;
   /** Already-local blob/object URL (e.g. pending file preview) */
   localSrc?: string | null;
+  /** Optional still shown while the video URL is resolving / buffering */
+  posterSrc?: string | null;
   emptyText?: string;
   /** Remount/reload when this changes (e.g. after re-render) */
   cacheKey?: string | number;
@@ -92,6 +94,7 @@ export function PhoneStill({
 export default function PhoneVideo({
   srcPath,
   localSrc,
+  posterSrc,
   emptyText = "Nothing to preview yet",
   cacheKey = "",
 }: Props) {
@@ -211,6 +214,7 @@ export default function PhoneVideo({
   }
 
   const showVideo = Boolean(blobUrl) && !loadError;
+  const showPosterOnly = !showVideo && Boolean(posterSrc) && !loadError;
 
   return (
     <div className="phone">
@@ -220,6 +224,7 @@ export default function PhoneVideo({
             ref={videoRef}
             key={blobUrl || "empty"}
             src={blobUrl || undefined}
+            poster={posterSrc || undefined}
             playsInline
             loop
             preload="metadata"
@@ -262,6 +267,13 @@ export default function PhoneVideo({
               aria-label="Volume"
               onChange={onVolumeChange}
             />
+          </div>
+        </>
+      ) : showPosterOnly ? (
+        <>
+          <img src={posterSrc || undefined} alt="" className="phone-poster" />
+          <div className="phone-empty phone-empty-overlay">
+            {loading ? "Loading video…" : null}
           </div>
         </>
       ) : (

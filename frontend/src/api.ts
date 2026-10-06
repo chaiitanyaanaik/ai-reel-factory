@@ -587,6 +587,7 @@ export type BrollClip = {
   path?: string | null;
   detail?: string | null;
   video_url?: string | null;
+  poster_url?: string | null;
   chat?: { role: string; content: string }[];
   versions?: unknown[];
 };

@@ -152,6 +152,11 @@ def edit_broll_clip(
             used_image=result.used_image,
             keyframe_path=keyframe.name if keyframe and Path(keyframe).exists() else None,
         )
+        # Refresh studio thumbnail for the new clip.
+        poster = broll_meta.poster_path(project_dir, idx)
+        if poster.exists():
+            poster.unlink(missing_ok=True)
+        broll_meta.ensure_poster(project_dir, idx)
         span.update(
             output={
                 "path": updated.path,

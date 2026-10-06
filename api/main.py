@@ -654,10 +654,9 @@ def api_list_broll(
 ):
     """List every B-roll clip with prompt/chat/version summary."""
     project_dir = _owned_project(project_id, user)
-    from video_engine.broll_meta import list_broll_metas
+    from video_engine.broll_meta import clip_path, list_broll_metas
 
     metas = list_broll_metas(project_dir)
-    from video_engine.broll_meta import clip_path
 
     return {
         "project_id": project_id,
@@ -666,6 +665,12 @@ def api_list_broll(
                 **m.model_dump(mode="json"),
                 "video_url": (
                     f"/projects/{project_id}/broll/{int(m.broll_index)}/video"
+                    if clip_path(project_dir, int(m.broll_index)).exists()
+                    else None
+                ),
+                # Poster URL advertised whenever video exists; endpoint may extract on first hit.
+                "poster_url": (
+                    f"/projects/{project_id}/broll/{int(m.broll_index)}/poster"
                     if clip_path(project_dir, int(m.broll_index)).exists()
                     else None
                 ),
@@ -699,6 +704,9 @@ def api_get_broll(
     return {
         **meta.model_dump(mode="json"),
         "video_url": f"/projects/{project_id}/broll/{index}/video" if video.exists() else None,
+        "poster_url": (
+            f"/projects/{project_id}/broll/{index}/poster" if video.exists() else None
+        ),
     }
 
 
@@ -715,6 +723,22 @@ def api_broll_video(
     if not path.exists():
         raise HTTPException(status_code=404, detail="B-roll video not found")
     return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+
+@app.get("/projects/{project_id}/broll/{index}/poster")
+def api_broll_poster(
+    project_id: str,
+    index: int,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+):
+    """Small JPEG still for list thumbnails (extracted on demand if missing)."""
+    project_dir = _owned_project(project_id, user)
+    from video_engine.broll_meta import ensure_poster
+
+    path = ensure_poster(project_dir, index)
+    if path is None:
+        raise HTTPException(status_code=404, detail="B-roll poster not found")
+    return FileResponse(path, media_type="image/jpeg", filename=path.name)
 
 
 @app.post("/projects/{project_id}/broll/{index}/edit")

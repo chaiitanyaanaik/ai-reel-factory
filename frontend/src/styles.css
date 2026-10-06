@@ -1817,7 +1817,8 @@ a {
 }
 
 .phone video,
-.phone-still img {
+.phone-still img,
+.phone .phone-poster {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1993,6 +1994,15 @@ a {
   padding: 1rem;
   background: #1f2937;
   box-sizing: border-box;
+}
+
+.phone .phone-empty-overlay {
+  background: transparent;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+  align-content: end;
+  padding-bottom: 1.25rem;
 }
 
 .preview-time {
@@ -2373,7 +2383,8 @@ a {
   background: #e5e7eb;
 }
 
-.broll-thumb video {
+.broll-thumb video,
+.broll-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;

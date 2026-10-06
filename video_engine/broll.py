@@ -215,6 +215,7 @@ def generate_broll_from_timeline(
                         suggestion=suggestion,
                         spoken_text=spoken,
                     )
+                    broll_meta.ensure_poster(project_dir, int(idx))
                     continue
 
                 pending.append(
@@ -322,6 +323,7 @@ def generate_broll_from_timeline(
                         estimated_cost_usd=veo_result.estimated_cost_usd,
                         used_image=veo_result.used_image,
                     )
+                    broll_meta.ensure_poster(project_dir, idx)
                     clip_span.update(
                         output={"path": path.name, "source": "veo"},
                         cost_usd=veo_result.estimated_cost_usd,

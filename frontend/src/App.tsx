@@ -394,6 +394,7 @@ function StudioApp({
   const [exportPreview, setExportPreview] = useState<"reel" | "cover">("reel");
   const [selectedBrollIndex, setSelectedBrollIndex] = useState<number | null>(null);
   const [brollMediaUrls, setBrollMediaUrls] = useState<Record<number, string>>({});
+  const [brollPosterUrls, setBrollPosterUrls] = useState<Record<number, string>>({});
   const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string | null>(null);
   const [brandForm, setBrandForm] = useState<BrandProfile>(EMPTY_BRAND);
   const [brandLoaded, setBrandLoaded] = useState(false);
@@ -563,6 +564,12 @@ function StudioApp({
 
   useEffect(() => {
     if (!projectId || brollClips.length === 0) {
+      setBrollPosterUrls((prev) => {
+        for (const u of Object.values(prev)) {
+          if (u.startsWith("blob:")) URL.revokeObjectURL(u);
+        }
+        return {};
+      });
       setBrollMediaUrls((prev) => {
         for (const u of Object.values(prev)) {
           if (u.startsWith("blob:")) URL.revokeObjectURL(u);
@@ -573,55 +580,38 @@ function StudioApp({
     }
     let cancelled = false;
     (async () => {
-      const prefer = selectedBrollIndex;
-      const ordered = [...brollClips].sort((a, b) => {
-        const ai = Number(a.broll_index);
-        const bi = Number(b.broll_index);
-        if (prefer == null) return ai - bi;
-        if (ai === prefer) return -1;
-        if (bi === prefer) return 1;
-        return ai - bi;
-      });
-
-      for (const c of ordered) {
-        if (cancelled) break;
-        const idx = Number(c.broll_index);
-        if (!c.video_url && !c.path) continue;
-        // Skip if we already have a playable URL for this clip.
-        let already = false;
-        setBrollMediaUrls((prev) => {
-          already = Boolean(prev[idx]);
-          return prev;
-        });
-        if (already) continue;
-        try {
-          const url = await fetchMediaObjectUrl(
-            `/projects/${projectId}/broll/${idx}/video`
-          );
-          if (cancelled) {
-            if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-            break;
-          }
-          setBrollMediaUrls((prev) => {
-            if (prev[idx]) {
+      // Posters are tiny JPEGs — load all for instant list thumbs.
+      await Promise.all(
+        brollClips.map(async (c) => {
+          const idx = Number(c.broll_index);
+          if (!c.poster_url && !c.video_url) return;
+          try {
+            const url = await fetchMediaObjectUrl(
+              `/projects/${projectId}/broll/${idx}/poster`
+            );
+            if (cancelled) {
               if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-              return prev;
+              return;
             }
-            return { ...prev, [idx]: url };
-          });
-        } catch (e) {
-          console.warn("B-roll media load failed", idx, e);
-        }
-      }
+            setBrollPosterUrls((prev) => {
+              if (prev[idx]) {
+                if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+                return prev;
+              }
+              return { ...prev, [idx]: url };
+            });
+          } catch (e) {
+            console.warn("B-roll poster load failed", idx, e);
+          }
+        })
+      );
     })();
     return () => {
       cancelled = true;
     };
-    // Re-run when clip list changes; selection only reorders priority for first paint.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, brollClips]);
 
-  // If user selects a clip whose URL isn't loaded yet, fetch just that one.
+  // Only fetch the full mp4 for the selected phone preview.
   useEffect(() => {
     if (!projectId || selectedBrollIndex == null) return;
     const clip = brollClips.find((c) => Number(c.broll_index) === selectedBrollIndex);
@@ -1689,14 +1679,22 @@ function StudioApp({
                               }}
                             >
                               <div className="broll-thumb">
-                                {brollMediaUrls[idx] ? (
-                                  <video
-                                    key={`${idx}-${clip.versions?.length ?? 0}-${brollMediaUrls[idx]}`}
-                                    src={brollMediaUrls[idx]}
-                                    muted
-                                    playsInline
-                                    preload="metadata"
-                                  />
+                                {brollPosterUrls[idx] || brollMediaUrls[idx] ? (
+                                  brollPosterUrls[idx] ? (
+                                    <img
+                                      key={`${idx}-poster-${clip.versions?.length ?? 0}`}
+                                      src={brollPosterUrls[idx]}
+                                      alt=""
+                                    />
+                                  ) : (
+                                    <video
+                                      key={`${idx}-${clip.versions?.length ?? 0}-${brollMediaUrls[idx]}`}
+                                      src={brollMediaUrls[idx]}
+                                      muted
+                                      playsInline
+                                      preload="metadata"
+                                    />
+                                  )
                                 ) : (
                                   <div className="broll-thumb-ph">
                                     {hasVideo ? "…" : "No file"}
@@ -1815,6 +1813,11 @@ function StudioApp({
                       localSrc={
                         selectedBrollIndex != null
                           ? brollMediaUrls[selectedBrollIndex] || null
+                          : null
+                      }
+                      posterSrc={
+                        selectedBrollIndex != null
+                          ? brollPosterUrls[selectedBrollIndex] || null
                           : null
                       }
                       srcPath={

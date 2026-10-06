@@ -17,6 +17,26 @@ def clip_path(project_dir: Path, index: int) -> Path:
     return project_dir / "broll" / f"{int(index):03d}.mp4"
 
 
+def poster_path(project_dir: Path, index: int) -> Path:
+    return project_dir / "broll" / f"{int(index):03d}.poster.jpg"
+
+
+def ensure_poster(project_dir: Path, index: int, *, at_seconds: float = 0.4) -> Path | None:
+    """Return NNN.poster.jpg, extracting a still from the mp4 if needed."""
+    poster = poster_path(project_dir, index)
+    if poster.exists() and poster.stat().st_size > 0:
+        return poster
+    video = clip_path(project_dir, index)
+    if not video.exists():
+        return None
+    try:
+        extract_keyframe(video, poster, at_seconds=at_seconds)
+    except Exception as e:
+        print(f"  [B-roll] Poster extract failed for {video.name}: {e}")
+        return None
+    return poster if poster.exists() and poster.stat().st_size > 0 else None
+
+
 def load_meta(project_dir: Path, index: int) -> Optional[BrollClipMeta]:
     path = meta_path(project_dir, index)
     if not path.exists():
