@@ -259,17 +259,25 @@ export async function authenticatedUrl(path: string): Promise<string> {
 }
 
 /**
- * Playable media URL for &lt;video&gt;/&lt;img&gt; — prefers short-lived ?access_token=
- * so the browser can stream instead of waiting on a full blob download.
- * Falls back to an authorized blob: URL if the token path is unavailable.
+ * Playable media URL for &lt;video&gt;/&lt;img&gt;.
+ * - Images/posters: prefer short-lived ?access_token= (fast, no full download wait).
+ * - Videos: always fetch with Authorization into a blob: URL — Safari/Clerk often
+ *   fail to play &lt;video src="...?access_token="&gt; (Range requests / token quirks).
  * Caller must revokeObjectURL only when the returned URL starts with blob:.
  */
 export async function fetchMediaObjectUrl(path: string): Promise<string> {
-  try {
-    const url = await authenticatedUrl(path);
-    if (url.includes("access_token=")) return url;
-  } catch {
-    /* fall through to blob */
+  const isVideo =
+    /\/video(?:\?|$)/.test(path) ||
+    path.includes("/artifacts/reel") ||
+    /\.mp4(?:\?|$)/i.test(path);
+
+  if (!isVideo) {
+    try {
+      const url = await authenticatedUrl(path);
+      if (url.includes("access_token=")) return url;
+    } catch {
+      /* fall through to blob */
+    }
   }
 
   const ctrl = new AbortController();
@@ -283,7 +291,11 @@ export async function fetchMediaObjectUrl(path: string): Promise<string> {
     if (!blob.size) {
       throw new Error("Empty media response");
     }
-    return URL.createObjectURL(blob);
+    const typed =
+      blob.type && blob.type !== "application/octet-stream"
+        ? blob
+        : new Blob([blob], { type: isVideo ? "video/mp4" : blob.type || "application/octet-stream" });
+    return URL.createObjectURL(typed);
   } catch (e) {
     if ((e as Error).name === "AbortError") {
       throw new Error("Media request timed out");

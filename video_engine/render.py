@@ -54,6 +54,36 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+_ALLOWED_X264_PRESETS = frozenset(
+    {
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    }
+)
+
+
+def _x264_preset() -> str:
+    """
+    libx264 speed/quality tradeoff via RENDER_X264_PRESET.
+    Faster = quicker encode, larger/lower-efficiency file. Default: veryfast (good for cloud CPUs).
+    """
+    raw = (os.environ.get("RENDER_X264_PRESET") or "veryfast").strip().lower()
+    if raw in _ALLOWED_X264_PRESETS:
+        return raw
+    return "veryfast"
+
+
+def _video_encode_args() -> list[str]:
+    return ["-c:v", "libx264", "-preset", _x264_preset()]
+
+
 
 
 def _audio_filter_chain(mute_expr: str | None = None) -> str:
@@ -155,7 +185,8 @@ def render_final(
                     f"{_video_scale_filter(width, height)}"
                 ),
                 "-af", _audio_filter_chain(),
-                "-c:v", "libx264", "-c:a", "aac",
+                *_video_encode_args(),
+                "-c:a", "aac",
                 str(out_path),
             ],
             check=True,
@@ -198,7 +229,8 @@ def render_final(
                     f"{_video_scale_filter(width, height)}"
                 ),
                 "-af", _audio_filter_chain(),
-                "-c:v", "libx264", "-c:a", "aac",
+                *_video_encode_args(),
+                "-c:a", "aac",
                 str(out_path),
             ],
             check=True,
@@ -314,13 +346,6 @@ def render_final(
                 )
                 current = out_label
 
-    # Captions burned in a second pass — nesting subtitles= inside filter_complex
-    # with force_style quotes reliably breaks FFmpeg's graph parser.
-    burn_captions = False
-    captions_path = project_dir / "subtitles" / "captions.srt"
-    if _truthy_env("BURN_IN_CAPTIONS", "1") and captions_path.exists():
-        burn_captions = True
-
     # Step 6: Speaker audio chain (denoise/EQ/dynamics/loudness/gain) + optional filler mutes
     filler_segs = [ov for ov in overlays if ov["mute"]]
     if filler_segs:
@@ -339,66 +364,20 @@ def render_final(
     if _truthy_env("RENDER_DEBUG_FILTERS", "0"):
         print(f"[DEBUG] filter_complex:\n{filter_complex}")
 
-    render_target = out_path
-    if burn_captions:
-        render_target = out_path.with_name("reel_pre_captions.mp4")
-
+    preset = _x264_preset()
+    print(f"[render] libx264 preset={preset}")
     cmd = ["ffmpeg", "-y"] + inputs + [
         "-filter_complex", filter_complex,
         "-map", f"[{current}]",
         "-map", audio_map,
-        "-c:v", "libx264", "-preset", "fast",
+        *_video_encode_args(),
         "-c:a", "aac",
-        str(render_target),
+        str(out_path),
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[DEBUG] FFmpeg stderr:\n{result.stderr[-2000:]}")
         result.check_returncode()
-
-    if burn_captions:
-        try:
-            margin_v = int(float(os.environ.get("CAPTION_MARGIN_V", "80")))
-        except ValueError:
-            margin_v = 80
-        try:
-            font_size = int(float(os.environ.get("CAPTION_FONT_SIZE", "54")))
-        except ValueError:
-            font_size = 54
-        style = (
-            f"Alignment=2,MarginV={margin_v},Fontsize={font_size},"
-            "Outline=3,BorderStyle=3,Shadow=0,BackColour=&H80000000"
-        )
-        # Resolve SRT via cwd + short filename so filter parsing stays simple.
-        vf = f"subtitles=captions.srt:charenc=UTF-8:force_style='{style}'"
-        cap_cmd = [
-            "ffmpeg", "-y", "-i", str(render_target.resolve()),
-            "-vf", vf,
-            "-c:v", "libx264", "-preset", "fast",
-            "-c:a", "copy",
-            str(out_path.resolve()),
-        ]
-        cap_result = subprocess.run(
-            cap_cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(captions_path.parent.resolve()),
-        )
-        if cap_result.returncode != 0:
-            err = cap_result.stderr or ""
-            if "No such filter: 'subtitles'" in err or "Filter not found" in err:
-                print(
-                    "[WARN] This FFmpeg build has no subtitles/libass filter; "
-                    "skipping burn-in captions."
-                )
-            else:
-                print(f"[DEBUG] Caption burn-in stderr:\n{err[-1500:]}")
-                print("[WARN] Caption burn-in failed; wrote reel without burned-in subtitles.")
-            if out_path.exists():
-                out_path.unlink()
-            render_target.replace(out_path)
-        else:
-            render_target.unlink(missing_ok=True)
 
     return out_path
