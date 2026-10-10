@@ -132,6 +132,41 @@ def test_stage_order_modes():
     assert "enhance" in VIDEO_FIRST_ORDER
 
 
+def test_broll_overlay_uses_setpts_not_tpad():
+    from video_engine.render import _broll_overlay_filter
+
+    frag = _broll_overlay_filter(
+        "1:v",
+        "ov0",
+        sped_duration=3.0,
+        sped_start=12.55,
+        scale_filter="scale=1080:1920",
+        fade_d=0.25,
+    )
+    assert "tpad=" not in frag
+    assert "setpts=PTS+12.550/TB" in frag
+    assert "trim=0:3.0" in frag
+    assert "[ov0]" in frag
+
+
+def test_broll_flash_uses_short_color_clip():
+    from video_engine.render import _broll_flash_filters
+
+    parts = _broll_flash_filters(
+        [(3.75, 3.81), (12.55, 12.61)],
+        width=1080,
+        height=1920,
+        flash_d=0.06,
+    )
+    joined = ";".join(parts)
+    assert "d=0.060" in joined
+    assert "setpts=PTS-STARTPTS+3.750/TB" in joined
+    assert "setpts=PTS-STARTPTS+12.550/TB" in joined
+    # Must not allocate a full-timeline white source.
+    assert "d=25" not in joined
+    assert "split=" not in joined
+
+
 def test_create_project_and_manifest(tmp_path, monkeypatch):
     import core.project_store as ps
 

@@ -4,6 +4,10 @@ AI Reel Factory — main workflow orchestrator.
 Default mode: video_first
   merge → enhance → transcribe → plan → align → broll → subtitles → render → cover
 
+With PIPELINE_OVERLAP_ENHANCE=1 (default), enhance runs in the background after its
+stage slot while plan/align/broll/subtitles proceed; Whisper uses merged.mp4; enhance
+joins before render. Never overlaps enhance with Whisper on the same host.
+
 Teleprompter mode: script first (topic → Gemini), then same video chain after clips exist.
 """
 from __future__ import annotations
@@ -13,6 +17,7 @@ import os
 import sys
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -94,11 +99,18 @@ def run_enhance_stage(project_dir: Path) -> Path:
     return path
 
 
-def run_transcribe_stage(project_dir: Path) -> Path:
+def run_transcribe_stage(project_dir: Path, *, prefer_merged: bool = False) -> Path:
     from video_engine.enhance import resolve_source_video
     from video_engine.transcribe import save_transcript, transcribe
 
-    video = resolve_source_video(project_dir)
+    # When enhance runs in the background, Whisper must not wait on enhanced.mp4.
+    # Timestamps match merged video; clean audio is only required at render.
+    if prefer_merged:
+        video = project_dir / "merged" / "merged.mp4"
+        if not video.exists():
+            raise FileNotFoundError(f"Run merge first: {video}")
+    else:
+        video = resolve_source_video(project_dir)
     data = transcribe(video)
     path = save_transcript(project_dir, data)
     print(f"[OK] Transcript -> {path}")
@@ -316,6 +328,78 @@ def run_pipeline(
     )
     save_run_report(project_dir, report)
 
+    # Phase B: run enhance in the background while plan/align/broll (network) run.
+    # Never overlap enhance with Whisper on 8GB hosts — both are RAM-heavy.
+    stages_slice = order[start:end]
+    overlap_enhance = os.environ.get("PIPELINE_OVERLAP_ENHANCE", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    can_overlap = (
+        overlap_enhance
+        and "enhance" in stages_slice
+        and any(s in stages_slice for s in ("plan", "align", "broll", "subtitles", "render"))
+    )
+
+    enhance_pool: ThreadPoolExecutor | None = None
+    enhance_future: Future | None = None
+    enhance_started_at = None
+    enhance_t0: float | None = None
+
+    def _join_enhance(*, fail_stage: str) -> None:
+        nonlocal enhance_future, enhance_pool
+        if enhance_future is None:
+            return
+        try:
+            enhance_future.result()
+            if enhance_t0 is not None and enhance_started_at is not None:
+                # Record wall time from submit → join when enhance was deferred.
+                if not any(s.name == "enhance" for s in report.stages):
+                    report.stages.append(
+                        StageResult(
+                            name="enhance",
+                            status="ok",
+                            started_at=enhance_started_at,
+                            finished_at=utc_now(),
+                            duration_seconds=round(time.monotonic() - enhance_t0, 3),
+                        )
+                    )
+        except Exception as e:
+            err_text = _stage_error_message(project_dir, "enhance", e)
+            if enhance_t0 is not None and enhance_started_at is not None:
+                report.stages.append(
+                    StageResult(
+                        name="enhance",
+                        status="failed",
+                        started_at=enhance_started_at,
+                        finished_at=utc_now(),
+                        duration_seconds=round(time.monotonic() - enhance_t0, 3),
+                        error=err_text,
+                    )
+                )
+            report.errors.append(f"enhance: {err_text}")
+            report.status = JobStatus.failed
+            report.finished_at = utc_now()
+            report.broll = _load_broll_report(project_dir)
+            report.veo_clips_used = sum(1 for b in report.broll if b.source == "veo")
+            report.artifacts = list_artifacts(project_dir)
+            save_run_report(project_dir, report)
+            update_manifest(
+                project_dir,
+                status=JobStatus.failed,
+                current_stage=fail_stage,
+                error=err_text,
+                artifacts=report.artifacts,
+            )
+            raise RuntimeError(err_text) from e
+        finally:
+            enhance_future = None
+            if enhance_pool is not None:
+                enhance_pool.shutdown(wait=False, cancel_futures=False)
+                enhance_pool = None
+
     try:
         with observe(
             "pipeline.run",
@@ -333,9 +417,13 @@ def run_pipeline(
                     if from_stage == "render" and to_stage == "render"
                     else ("broll_generate" if to_stage == "broll" else "pipeline")
                 ),
+                "overlap_enhance": can_overlap,
             },
         ):
-            for name in order[start:end]:
+            if can_overlap:
+                print("[pipeline] PIPELINE_OVERLAP_ENHANCE=1 — enhance runs beside plan/broll")
+
+            for name in stages_slice:
                 update_manifest(project_dir, current_stage=name)
                 t0 = time.monotonic()
                 started = utc_now()
@@ -350,7 +438,26 @@ def run_pipeline(
                         as_type="span",
                         metadata={"stage": name, "category": stage_category},
                     ):
-                        STAGES[name](project_dir)
+                        if name == "enhance" and can_overlap:
+                            enhance_pool = ThreadPoolExecutor(
+                                max_workers=1, thread_name_prefix="enhance-bg"
+                            )
+                            enhance_started_at = started
+                            enhance_t0 = t0
+                            enhance_future = enhance_pool.submit(run_enhance_stage, project_dir)
+                            print("[pipeline] enhance started in background")
+                            # Don't append StageResult yet — recorded at join.
+                            continue
+
+                        if name == "render" and enhance_future is not None:
+                            print("[pipeline] waiting for enhance before render…")
+                            _join_enhance(fail_stage="render")
+
+                        if name == "transcribe" and can_overlap:
+                            run_transcribe_stage(project_dir, prefer_merged=True)
+                        else:
+                            STAGES[name](project_dir)
+
                     dur = time.monotonic() - t0
                     report.stages.append(
                         StageResult(
@@ -390,6 +497,10 @@ def run_pipeline(
                     )
                     raise
 
+            # If the slice ends before render (e.g. --to broll), still finish enhance.
+            if enhance_future is not None:
+                _join_enhance(fail_stage="enhance")
+
             report.status = JobStatus.completed
             report.finished_at = utc_now()
             report.broll = _load_broll_report(project_dir)
@@ -405,6 +516,8 @@ def run_pipeline(
             )
             return report
     finally:
+        if enhance_pool is not None:
+            enhance_pool.shutdown(wait=False, cancel_futures=False)
         flush()
         clear_trace_context()
 

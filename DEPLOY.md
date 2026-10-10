@@ -297,6 +297,7 @@ Verify:
 
 - Whisper + DeepFilterNet + Veo = CPU + Google spend. Keep rate limits on.
 - After changing Python audio deps (`deepfilternet`, `torch`), rebuild and push **reelkut-base** (`Dockerfile.base`) before the app image.
+- **8GB hosts:** keep job `max_workers=1`. Render uses PTS-delayed B-roll overlays (not `tpad`) to cut RAM. `PIPELINE_OVERLAP_ENHANCE=1` hides enhance under Veo wait; set `0` if debugging enhance races.
 - Separate Google key for prod; set a billing budget alert.
 - Security group: SSH = your IP only.
 - `.env` and `frontend/.env.production.local` stay on the server only.

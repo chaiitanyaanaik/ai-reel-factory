@@ -182,6 +182,53 @@ def _video_scale_filter(width: int, height: int) -> str:
     return base
 
 
+def _broll_overlay_filter(
+    input_label: str,
+    out_label: str,
+    *,
+    sped_duration: float,
+    sped_start: float,
+    scale_filter: str,
+    fade_d: float,
+) -> str:
+    """
+    Trim/scale/fade a B-roll clip and delay PTS so overlays stay clip-length in memory.
+
+    Prefer setpts delay over tpad=start_duration (which materializes full-timeline
+    black frames and spikes RAM on 8GB hosts).
+    """
+    fade_out_start = max(0.0, sped_duration - fade_d)
+    return (
+        f"[{input_label}]trim=0:{sped_duration},setpts=PTS-STARTPTS,"
+        f"{scale_filter},"
+        f"fade=type=in:start_time=0:duration={fade_d}:color=black,"
+        f"fade=type=out:start_time={fade_out_start:.3f}:duration={fade_d}:color=black,"
+        f"setpts=PTS+{sped_start:.3f}/TB"
+        f"[{out_label}]"
+    )
+
+
+def _broll_flash_filters(
+    flash_windows: list[tuple[float, float]],
+    *,
+    width: int,
+    height: int,
+    flash_d: float,
+) -> list[str]:
+    """
+    Short white flash sources (duration ≈ flash_d), delayed to each B-roll start.
+
+    Avoids a full-timeline color=d=… source + split, which is heavy on RAM.
+    """
+    parts: list[str] = []
+    for j, (fs, _fe) in enumerate(flash_windows):
+        parts.append(
+            f"color=c=white:s={width}x{height}:r=30:d={flash_d:.3f}[flashraw{j}];"
+            f"[flashraw{j}]setpts=PTS-STARTPTS+{fs:.3f}/TB[flashsrc{j}]"
+        )
+    return parts
+
+
 def load_timeline(project_dir: Path) -> list[dict]:
     path = project_dir / "cuts" / "timeline.json"
     if not path.exists():
@@ -315,27 +362,24 @@ def render_final(
     else:
         filter_parts.append("[flashed]copy[base]")
 
-    # Step 4: Scale, trim, fade, and time-align each broll overlay.
-    # Use tpad to insert black padding so overlay frames arrive at the correct
-    # timestamp instead of being consumed early by the overlay filter.
+    # Step 4: Scale, trim, fade, and PTS-delay each broll overlay (no tpad).
     for i, ov in enumerate(overlays):
         idx = i + 1
         sped_duration = ov["duration"] / SPEED
         sped_start = ov["start"] / SPEED
-        sped_end = ov["end"] / SPEED
         fade_d = min(FADE_DURATION, sped_duration / 3)
-        fade_out_start = max(0, sped_duration - fade_d)
         filter_parts.append(
-            f"[{idx}:v]trim=0:{sped_duration},setpts=PTS-STARTPTS,"
-            f"{scale_filter},"
-            f"fade=type=in:start_time=0:duration={fade_d}:color=black,"
-            f"fade=type=out:start_time={fade_out_start:.3f}:duration={fade_d}:color=black,"
-            f"tpad=start_duration={sped_start:.3f}:color=black"
-            f"[ov{i}]"
+            _broll_overlay_filter(
+                f"{idx}:v",
+                f"ov{i}",
+                sped_duration=sped_duration,
+                sped_start=sped_start,
+                scale_filter=scale_filter,
+                fade_d=fade_d,
+            )
         )
 
-    # Step 5: Overlay broll -- tpad ensures frames are time-aligned;
-    # enable controls visibility so black padding isn't shown.
+    # Step 5: Overlay broll — PTS delay + enable= keeps timing without black padding.
     current = "base"
     for i, ov in enumerate(overlays):
         out_label = f"v{i}"
@@ -362,21 +406,14 @@ def render_final(
             if not ov.get("mute")
         ]
         if flash_windows:
-            total_real_end = max(float(ov["end"]) for ov in overlays)
-            total_sped_d = (total_real_end / SPEED) + flash_d + 0.1
-            n_flash = len(flash_windows)
-            # Each overlay pad can only be consumed once — split the white source.
-            if n_flash == 1:
-                filter_parts.append(
-                    f"color=c=white:s={width}x{height}:r=30:d={total_sped_d:.3f}[flashsrc0]"
+            filter_parts.extend(
+                _broll_flash_filters(
+                    flash_windows,
+                    width=width,
+                    height=height,
+                    flash_d=flash_d,
                 )
-            else:
-                outs = "".join(f"[flashsrc{j}]" for j in range(n_flash))
-                filter_parts.append(
-                    f"color=c=white:s={width}x{height}:r=30:d={total_sped_d:.3f}[flashsrc];"
-                    f"[flashsrc]split={n_flash}{outs}"
-                )
-
+            )
             for j, (fs, fe) in enumerate(flash_windows):
                 out_label = f"flashout{j}"
                 filter_parts.append(
