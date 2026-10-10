@@ -63,7 +63,11 @@ def plan_from_transcript(project_dir: Path) -> dict:
     topic = _optional_topic(project_dir)
     refs = load_references("visual-patterns", "writing-styles")
     style = style_guide_text(project_dir)
-    rules = load_editor_rules()
+
+    from core.recipes import resolve_recipe_for_project
+
+    recipe_cfg = resolve_recipe_for_project(project_dir)
+    rules = load_editor_rules(recipe_cfg)
 
     prompt = build_editor_prompt(
         plain=plain,
@@ -73,6 +77,7 @@ def plan_from_transcript(project_dir: Path) -> dict:
         style=style,
         total_duration=total,
         rules=rules,
+        recipe_brief=recipe_cfg.craft_brief,
     )
 
     try:

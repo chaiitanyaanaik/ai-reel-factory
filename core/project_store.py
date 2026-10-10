@@ -43,6 +43,7 @@ def create_project(
     topic: Optional[str] = None,
     mode: PipelineMode = PipelineMode.video_first,
     owner_id: Optional[str] = None,
+    recipe: str = "talking_head",
 ) -> ProjectManifest:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     # Stable opaque id — display name is separate and editable.
@@ -57,12 +58,15 @@ def create_project(
     if topic:
         (project_dir / "topic.txt").write_text(topic.strip() + "\n", encoding="utf-8")
     display = (name or "").strip() or None
+    from core.recipes import normalize_recipe
+
     manifest = ProjectManifest(
         id=project_id,
         name=display,
         mode=mode,
         topic=topic,
         owner_id=owner_id,
+        recipe=normalize_recipe(recipe),
     )
     save_manifest(project_dir, manifest)
     return manifest
@@ -73,10 +77,16 @@ def update_project(
     *,
     name: Optional[str] = None,
     topic: Optional[str] = None,
+    recipe: Optional[str] = None,
+    intensity: Optional[str] = None,
     update_name: bool = False,
     update_topic: bool = False,
+    update_recipe: bool = False,
+    update_intensity: bool = False,
 ) -> ProjectManifest:
-    """Update display fields without renaming the project directory."""
+    """Update display / recipe fields without renaming the project directory."""
+    from core.recipes import normalize_intensity, normalize_recipe
+
     project_dir = get_project_dir(project_id)
     manifest = load_manifest(project_dir)
     if update_name:
@@ -90,7 +100,21 @@ def update_project(
             topic_path.write_text(cleaned_topic + "\n", encoding="utf-8")
         elif topic_path.exists():
             topic_path.unlink()
+    recipe_changed = False
+    if update_recipe:
+        next_recipe = normalize_recipe(recipe)
+        recipe_changed = next_recipe != normalize_recipe(getattr(manifest, "recipe", None))
+        manifest.recipe = next_recipe
+    if update_intensity:
+        manifest.intensity = normalize_intensity(intensity)
     save_manifest(project_dir, manifest)
+    if recipe_changed and (
+        (project_dir / "final_script.json").exists()
+        or (project_dir / "cuts" / "timeline.json").exists()
+        or (project_dir / "final" / "reel.mp4").exists()
+    ):
+        invalidate_pipeline_after_recipe_change(project_dir)
+        manifest = load_manifest(project_dir)
     return manifest
 
 
@@ -385,6 +409,56 @@ def invalidate_pipeline_after_clip_change(project_dir: Path) -> bool:
             last_job_id=None,
             error=None,
             artifacts={},
+        )
+        cleared = True
+    except Exception:
+        pass
+    return cleared
+
+
+def invalidate_pipeline_after_recipe_change(project_dir: Path) -> bool:
+    """
+    Clear plan→final when style recipe changes. Keeps merge + transcript
+    (speech unchanged); user re-runs Extract script / B-roll / Final.
+    """
+    cleared = False
+
+    def _rm_tree(path: Path) -> None:
+        nonlocal cleared
+        if path.is_dir() and any(path.iterdir()):
+            shutil.rmtree(path, ignore_errors=True)
+            path.mkdir(parents=True, exist_ok=True)
+            cleared = True
+
+    for rel in (
+        "final_script.json",
+        "cuts/timeline.json",
+        "cuts/polish_events.json",
+        "run_report.json",
+        "final/reel.mp4",
+        "final/cover.jpg",
+    ):
+        p = project_dir / rel
+        if p.is_file():
+            p.unlink(missing_ok=True)
+            cleared = True
+
+    for rel in ("broll", "cuts", "subtitles", "cover", "final"):
+        _rm_tree(project_dir / rel)
+
+    for sub in PROJECT_SUBDIRS:
+        (project_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Keep merged/transcript artifact paths; drop plan/reel/cover.
+        arts = list_artifacts(project_dir)
+        update_manifest(
+            project_dir,
+            status=JobStatus.pending,
+            current_stage=None,
+            last_job_id=None,
+            error=None,
+            artifacts=arts,
         )
         cleared = True
     except Exception:

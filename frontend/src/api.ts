@@ -104,6 +104,8 @@ export type ClipInfo = {
   url: string;
 };
 
+export type StyleRecipe = "talking_head" | "tutorial" | "story";
+
 export type ProjectDetail = {
   manifest: {
     id: string;
@@ -114,6 +116,8 @@ export type ProjectDetail = {
     owner_id?: string | null;
     current_stage?: string | null;
     error?: string | null;
+    recipe?: StyleRecipe | null;
+    intensity?: "safer" | "balanced" | "punchy" | null;
   };
   artifacts: Record<string, string>;
   clips: ClipInfo[];
@@ -500,7 +504,12 @@ export async function createProject(name?: string, topic?: string) {
 
 export async function updateProject(
   id: string,
-  body: { name?: string | null; topic?: string | null }
+  body: {
+    name?: string | null;
+    topic?: string | null;
+    recipe?: StyleRecipe | null;
+    intensity?: "safer" | "balanced" | "punchy" | null;
+  }
 ) {
   const res = await apiFetch(`/projects/${encodeURIComponent(id)}`, {
     method: "PUT",

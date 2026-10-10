@@ -25,6 +25,10 @@ class JobStatus(str, Enum):
     cancelled = "cancelled"
 
 
+RecipeName = Literal["talking_head", "tutorial", "story"]
+IntensityName = Literal["safer", "balanced", "punchy"]
+
+
 class ProjectCreate(BaseModel):
     name: Optional[str] = Field(
         default=None,
@@ -35,11 +39,23 @@ class ProjectCreate(BaseModel):
         description="Optional intent text (not spoken dialogue)",
     )
     mode: PipelineMode = PipelineMode.video_first
+    recipe: RecipeName = Field(
+        default="talking_head",
+        description="Style recipe (non-editor pacing/zoom preset)",
+    )
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(default=None, description="Display name")
     topic: Optional[str] = Field(default=None, description="Intent / B-roll theme")
+    recipe: Optional[RecipeName] = Field(
+        default=None,
+        description="Style recipe (talking_head | tutorial | story)",
+    )
+    intensity: Optional[IntensityName] = Field(
+        default=None,
+        description="Stored for later; Phase 1 does not scale behavior yet",
+    )
 
 
 class Beat(BaseModel):
@@ -176,6 +192,14 @@ class ProjectManifest(BaseModel):
     owner_id: Optional[str] = Field(
         default=None,
         description="Authenticated user id that owns this project",
+    )
+    recipe: RecipeName = Field(
+        default="talking_head",
+        description="Style recipe preset; talking_head matches legacy pacing/zoom",
+    )
+    intensity: IntensityName = Field(
+        default="balanced",
+        description="Reserved for Make-it-again (Phase 4); unused in Phase 1",
     )
     artifacts: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None

@@ -151,7 +151,7 @@ teleprompter:
 | Stage | Role | Key outputs |
 |-------|------|-------------|
 | `merge` | FFmpeg concat of `raw_clips/` | `merged/merged.mp4` |
-| `enhance` | Social audio preset | `merged/enhanced.mp4` |
+| `enhance` | DeepFilterNet denoise + loudness (afftdn fallback) | `merged/enhanced.mp4` |
 | `transcribe` | Whisper (uses enhanced if present) | `transcripts/transcript.json` |
 | `plan` | Editor agent: cleaned script + beats + guardrails | `raw_script.md`, `final_script.json` |
 | `script` | Teleprompter only: invent script + plan from topic | same as above |
@@ -338,7 +338,7 @@ Highlights (full list in `.env.example`):
 | `BROLL_USE_VEO` / `VEO_*` | B-roll generation |
 | `CORS_ORIGINS` | Frontend origin(s) |
 | `RATE_LIMIT_*` | Per-user daily caps |
-| `AUDIO_PRESET` / `SPEAKER_VOLUME_DB` | Enhance + render |
+| `AUDIO_DENOISE` / `AUDIO_PRESET` / `SPEAKER_VOLUME_DB` | Enhance (default `deepfilternet`) + render |
 | `LANGFUSE_*` | Optional cost/latency traces |
 ---
 

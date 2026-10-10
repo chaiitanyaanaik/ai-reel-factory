@@ -41,6 +41,7 @@ def _make_silent_mp4(path: Path, seconds: float = 1.0) -> None:
 def test_merge_and_enhance(tmp_path, monkeypatch):
     import core.project_store as ps
 
+    monkeypatch.setenv("AUDIO_DENOISE", "afftdn")
     monkeypatch.setattr(ps, "PROJECTS_DIR", tmp_path)
     from schemas.models import PipelineMode
     from video_engine.enhance import enhance_audio, social_audio_filters

@@ -1,6 +1,6 @@
 """
 Final render: timeline-driven A-roll / B-roll / optional filler -> 1080x1920 reel.
-Effects: 1.2x speed, alternating zoom cuts, fade-in/out on broll, white flash at start.
+Effects: 1.2x speed, CapCut-style slow zoom-in on A-roll windows, B-roll fades, white flash.
 Audio: only from merged (speaker) track — B-roll inputs use video only, never mixed in.
 Speaker gain: SPEAKER_VOLUME_DB (default 2.5 dB). Filler segments: B-roll + muted audio if present.
 """
@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import os
 import subprocess
+from typing import Iterable
 
 
 WIDTH, HEIGHT = 1080, 1920
@@ -85,44 +86,75 @@ def _video_encode_args() -> list[str]:
 
 
 
+def _animated_zoom_multiplier_expr(
+    zoom_ranges: Iterable[tuple[float, float]],
+    *,
+    speed: float,
+    factor: float,
+    ramp_seconds: float,
+) -> str:
+    """
+    FFmpeg expression for scale multiplier (eval=frame).
 
-def _audio_filter_chain(mute_expr: str | None = None) -> str:
+    Outside zoom windows → 1. Inside → ease 1→factor over ramp_seconds, then hold.
+    Commas escaped for filtergraph (\\,).
+    """
+    amp = max(0.0, float(factor) - 1.0)
+    ramp = max(0.3, float(ramp_seconds))
+    progresses: list[str] = []
+    for s, e in sorted(zoom_ranges):
+        ss = float(s) / speed
+        ee = float(e) / speed
+        if ee <= ss:
+            continue
+        # Progress 0→1 over the first `ramp` seconds of the window.
+        progresses.append(
+            f"if(between(t\\,{ss:.3f}\\,{ee:.3f})\\,"
+            f"min(1\\,(t-{ss:.3f})/{ramp:.3f})\\,0)"
+        )
+    if not progresses:
+        return "1"
+    prog = progresses[0]
+    for p in progresses[1:]:
+        prog = f"max({prog}\\,{p})"
+    if amp < 1e-6:
+        return "1"
+    return f"(1+{amp:.4f}*({prog}))"
+
+
+def _audio_filter_chain(
+    mute_expr: str | None = None,
+    *,
+    already_enhanced: bool = False,
+) -> str:
     """
     Build FFmpeg audio filters for the speaker track.
-    Order: atempo -> (HP/LP) -> (denoise) -> (compress/limit) -> (loudnorm) -> (speaker gain) -> (mute_expr)
+
+    If the input is already merged/enhanced.mp4, only speed + gain (+ mutes):
+    re-running denoise/compress/loudnorm pumps residual room noise.
     """
     parts: list[str] = []
     parts.append(f"atempo={SPEED}")
 
-    hp = _int_env("AUDIO_HIGHPASS_HZ", 100)
-    lp = _int_env("AUDIO_LOWPASS_HZ", 12000)
-    if hp > 0:
-        parts.append(f"highpass=f={hp}")
-    if lp > 0:
-        parts.append(f"lowpass=f={lp}")
+    light = already_enhanced and _truthy_env("RENDER_LIGHT_AUDIO_ON_ENHANCED", "1")
+    if not light:
+        hp = _int_env("AUDIO_HIGHPASS_HZ", 100)
+        lp = _int_env("AUDIO_LOWPASS_HZ", 12000)
+        if hp > 0:
+            parts.append(f"highpass=f={hp}")
+        if lp > 0:
+            parts.append(f"lowpass=f={lp}")
 
-    denoise = os.environ.get("AUDIO_DENOISE", "0").strip().lower()
-    if denoise in ("1", "true", "yes"):
-        denoise = "afftdn"
-    if denoise == "afftdn":
-        # Conservative spectral denoise; tune via env if needed later.
-        parts.append("afftdn=nf=-25")
-    elif denoise == "arnndn":
-        model = os.environ.get("ARNNDN_MODEL_PATH", "").strip()
-        if model:
-            parts.append(f"arnndn=m='{model}'")
-        else:
-            # Fall back to afftdn if model is not provided.
-            parts.append("afftdn=nf=-25")
+        # Denoise runs in enhance stage; avoid double-processing here.
+        if _truthy_env("AUDIO_COMPRESS", "1"):
+            makeup = _float_env("AUDIO_COMPRESS_MAKEUP", 1.5)
+            parts.append(
+                f"acompressor=threshold=-18dB:ratio=3:attack=5:release=120:makeup={makeup}"
+            )
+            parts.append("alimiter=limit=0.95")
 
-    if _truthy_env("AUDIO_COMPRESS", "1"):
-        # Gentle compression to keep speech present without pumping.
-        parts.append("acompressor=threshold=-18dB:ratio=3:attack=5:release=120:makeup=3")
-        parts.append("alimiter=limit=0.95")
-
-    if _truthy_env("AUDIO_LOUDNORM", "0"):
-        # Social-friendly target; keep conservative to avoid artifacts.
-        parts.append("loudnorm=I=-14:TP=-1.5:LRA=11")
+        if _truthy_env("AUDIO_LOUDNORM", "0"):
+            parts.append("loudnorm=I=-14:TP=-1.5:LRA=11")
 
     vol = _speaker_volume_suffix().lstrip(",")
     if vol:
@@ -170,6 +202,7 @@ def render_final(
     except FileNotFoundError as e:
         raise FileNotFoundError(f"Merged video not found: {e}") from e
 
+    already_enhanced = merged.name == "enhanced.mp4"
     final_dir = project_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
     out_path = final_dir / "reel.mp4"
@@ -184,7 +217,7 @@ def render_final(
                     f"setpts=PTS/{SPEED},"
                     f"{_video_scale_filter(width, height)}"
                 ),
-                "-af", _audio_filter_chain(),
+                "-af", _audio_filter_chain(already_enhanced=already_enhanced),
                 *_video_encode_args(),
                 "-c:a", "aac",
                 str(out_path),
@@ -228,7 +261,7 @@ def render_final(
                     f"setpts=PTS/{SPEED},"
                     f"{_video_scale_filter(width, height)}"
                 ),
-                "-af", _audio_filter_chain(),
+                "-af", _audio_filter_chain(already_enhanced=already_enhanced),
                 *_video_encode_args(),
                 "-c:a", "aac",
                 str(out_path),
@@ -238,22 +271,21 @@ def render_final(
         )
         return out_path
 
-    # Determine which aroll segments get zoomed (alternating, starting with no-zoom)
+    # Zoom windows from style recipe (talking_head = legacy every-other A-roll)
+    from core.recipes import resolve_recipe_for_project, select_zoom_ranges
+
     aroll_segments = [s for s in timeline if s.get("type") == "aroll"]
-    zoom_ranges = set()
-    for i, seg in enumerate(aroll_segments):
-        if i % 2 == 1:
-            zoom_ranges.add((float(seg["start"]), float(seg["end"])))
+    recipe_cfg = resolve_recipe_for_project(project_dir)
+    zoom_ranges = select_zoom_ranges(aroll_segments, recipe_cfg.zoom_policy)
 
     inputs = ["-i", str(merged)]
     for ov in overlays:
         inputs.extend(["-i", str(ov["clip"])])
 
     scale_filter = _video_scale_filter(width, height)
-    zoom_crop_w = int(width / 1.1)
-    zoom_crop_h = int(height / 1.1)
-    zoom_x = (width - zoom_crop_w) // 2
-    zoom_y = (height - zoom_crop_h) // 2
+    # CapCut-style slow zoom-in (animated), not a static crop hold.
+    zoom_factor = max(1.05, min(_float_env("ZOOM_FACTOR", 1.35), 1.8))
+    zoom_ramp = max(0.3, min(_float_env("ZOOM_RAMP_SECONDS", 2.5), 8.0))
 
     filter_parts = []
 
@@ -267,18 +299,18 @@ def render_final(
         f"[scaled]fade=type=in:start_time=0:duration={FLASH_DURATION}:color=white[flashed]"
     )
 
-    # Step 3: Apply zoom on alternating aroll segments
+    # Step 3: Animated slow zoom-in on selected A-roll windows (visible motion).
+    # Static crop-holds are easy to miss; CapCut-style ramps 1→factor over ZOOM_RAMP_SECONDS.
     if zoom_ranges:
-        zoom_enable = "+".join(
-            f"between(t,{s/SPEED:.3f},{e/SPEED:.3f})"
-            for s, e in sorted(zoom_ranges)
+        z_expr = _animated_zoom_multiplier_expr(
+            zoom_ranges,
+            speed=SPEED,
+            factor=zoom_factor,
+            ramp_seconds=zoom_ramp,
         )
         filter_parts.append(
-            f"[flashed]crop=w='if({zoom_enable},{zoom_crop_w},{width})':"
-            f"h='if({zoom_enable},{zoom_crop_h},{height})':"
-            f"x='if({zoom_enable},{zoom_x},0)':"
-            f"y='if({zoom_enable},{zoom_y},0)',"
-            f"scale={width}:{height}[base]"
+            f"[flashed]scale=w='iw*{z_expr}':h='ih*{z_expr}':eval=frame,"
+            f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2[base]"
         )
     else:
         filter_parts.append("[flashed]copy[base]")
@@ -332,15 +364,23 @@ def render_final(
         if flash_windows:
             total_real_end = max(float(ov["end"]) for ov in overlays)
             total_sped_d = (total_real_end / SPEED) + flash_d + 0.1
-            flash_src = "flashsrc"
-            filter_parts.append(
-                f"color=c=white:s={width}x{height}:r=30:d={total_sped_d:.3f}[{flash_src}]"
-            )
+            n_flash = len(flash_windows)
+            # Each overlay pad can only be consumed once — split the white source.
+            if n_flash == 1:
+                filter_parts.append(
+                    f"color=c=white:s={width}x{height}:r=30:d={total_sped_d:.3f}[flashsrc0]"
+                )
+            else:
+                outs = "".join(f"[flashsrc{j}]" for j in range(n_flash))
+                filter_parts.append(
+                    f"color=c=white:s={width}x{height}:r=30:d={total_sped_d:.3f}[flashsrc];"
+                    f"[flashsrc]split={n_flash}{outs}"
+                )
 
             for j, (fs, fe) in enumerate(flash_windows):
                 out_label = f"flashout{j}"
                 filter_parts.append(
-                    f"[{current}][{flash_src}]overlay=0:0:"
+                    f"[{current}][flashsrc{j}]overlay=0:0:"
                     f"enable='between(t,{fs:.3f},{fe:.3f})':"
                     f"eof_action=pass[{out_label}]"
                 )
@@ -353,10 +393,14 @@ def render_final(
             f"volume=enable='between(t,{f['start']/SPEED:.3f},{f['end']/SPEED:.3f})':volume=0"
             for f in filler_segs
         )
-        filter_parts.append(f"[0:a]{_audio_filter_chain(mute_expr=mute_expr)}[aout]")
+        filter_parts.append(
+            f"[0:a]{_audio_filter_chain(mute_expr=mute_expr, already_enhanced=already_enhanced)}[aout]"
+        )
         audio_map = "[aout]"
     else:
-        filter_parts.append(f"[0:a]{_audio_filter_chain()}[aout]")
+        filter_parts.append(
+            f"[0:a]{_audio_filter_chain(already_enhanced=already_enhanced)}[aout]"
+        )
         audio_map = "[aout]"
 
     # Use ';' only — newlines inside filter_complex confuse some FFmpeg builds.

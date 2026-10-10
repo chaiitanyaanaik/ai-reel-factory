@@ -15,6 +15,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
+.venv-df/
 venv/
 *.egg-info/
 dist/
@@ -30,7 +31,11 @@ build/
 *.mp3
 *.aac
 
-# Generated project outputs
+# Local / API project data — never publish (fixtures or user runs)
+projects/project-*/
+projects/project_*/
+
+# Generated project outputs (belt-and-suspenders if a path is force-added)
 projects/*/raw_clips/
 projects/*/merged/
 projects/*/transcripts/

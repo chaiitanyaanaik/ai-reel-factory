@@ -295,7 +295,8 @@ Verify:
 
 ## Cost / safety notes
 
-- Whisper + Veo = CPU + Google spend. Keep rate limits on.
+- Whisper + DeepFilterNet + Veo = CPU + Google spend. Keep rate limits on.
+- After changing Python audio deps (`deepfilternet`, `torch`), rebuild and push **reelkut-base** (`Dockerfile.base`) before the app image.
 - Separate Google key for prod; set a billing budget alert.
 - Security group: SSH = your IP only.
 - `.env` and `frontend/.env.production.local` stay on the server only.

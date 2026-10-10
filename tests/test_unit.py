@@ -99,13 +99,26 @@ def test_align_prefers_start_time():
     assert timeline[1]["broll_index"] == 1
 
 
-def test_social_audio_filters_default():
-    from video_engine.enhance import social_audio_filters
+def test_social_audio_filters_default(monkeypatch):
+    from video_engine.enhance import resolve_denoise_mode, social_audio_filters
 
+    monkeypatch.setenv("AUDIO_DENOISE", "afftdn")
+    assert resolve_denoise_mode() == "afftdn"
     af = social_audio_filters()
     assert "highpass" in af
-    assert "afftdn" in af or "arnndn" in af
+    assert "afftdn" in af
     assert "loudnorm" in af or "acompressor" in af
+
+
+def test_resolve_denoise_mode_values(monkeypatch):
+    from video_engine.enhance import resolve_denoise_mode
+
+    monkeypatch.setenv("AUDIO_DENOISE", "deepfilternet")
+    assert resolve_denoise_mode() == "deepfilternet"
+    monkeypatch.setenv("AUDIO_DENOISE", "arnndn")
+    assert resolve_denoise_mode() == "afftdn"
+    monkeypatch.setenv("AUDIO_DENOISE", "off")
+    assert resolve_denoise_mode() == "off"
 
 
 def test_stage_order_modes():

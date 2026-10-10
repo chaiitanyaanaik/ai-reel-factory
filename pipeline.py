@@ -286,6 +286,9 @@ def run_pipeline(
         job_id=job_id,
     )
 
+    from core.recipes import resolve_recipe_for_project
+
+    recipe_cfg = resolve_recipe_for_project(project_dir)
     report = RunReport(
         project_id=project_name,
         mode=mode,
@@ -297,6 +300,9 @@ def run_pipeline(
             "veo": os.environ.get("VEO_MODEL", "veo-3.1-lite-generate-preview"),
             "veo_resolution": os.environ.get("VEO_RESOLUTION", "720p"),
             "veo_duration": os.environ.get("VEO_DURATION_SECONDS", "4"),
+            "recipe": recipe_cfg.name,
+            "intensity": recipe_cfg.intensity,
+            "zoom_policy": recipe_cfg.zoom_policy,
         },
         veo_max_clips=int(os.environ.get("VEO_MAX_CLIPS", "5") or 5),
     )

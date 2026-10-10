@@ -24,5 +24,8 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
 # Warm Whisper weights into the image (optional; speeds first request)
 RUN python -c "import whisper; whisper.load_model('base')" || true
 
+# Pre-download DeepFilterNet3 weights (enhance stage)
+RUN python -c "from df.enhance import init_df; init_df('DeepFilterNet3', log_file=None, log_level='ERROR')" || true
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app

@@ -363,6 +363,7 @@ def api_create_project(
             topic=body.topic,
             mode=body.mode,
             owner_id=user.id,
+            recipe=body.recipe,
         )
     except FileExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -410,8 +411,12 @@ def api_patch_project(
         project_id,
         name=fields.get("name"),
         topic=fields.get("topic"),
+        recipe=fields.get("recipe"),
+        intensity=fields.get("intensity"),
         update_name="name" in fields,
         update_topic="topic" in fields,
+        update_recipe="recipe" in fields,
+        update_intensity="intensity" in fields,
     )
 
 

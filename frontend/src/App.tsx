@@ -34,8 +34,31 @@ import {
   type ClipInfo,
   type ProjectDetail,
   type ProjectSummary,
+  type StyleRecipe,
   type UsageSnapshot,
 } from "./api";
+
+const STYLE_RECIPES: {
+  id: StyleRecipe;
+  label: string;
+  blurb: string;
+}[] = [
+  {
+    id: "talking_head",
+    label: "Talking head",
+    blurb: "Face-forward tips — light cutaways (default).",
+  },
+  {
+    id: "tutorial",
+    label: "Tutorial",
+    blurb: "Teach/clarify — denser cutaways and zooms.",
+  },
+  {
+    id: "story",
+    label: "Story",
+    blurb: "Narrative presence — fewer cutaways, more face.",
+  },
+];
 import { isClerkConfigured } from "./clerkConfig";
 import Admin from "./Admin";
 import Landing from "./Landing";
@@ -371,6 +394,7 @@ function StudioApp({
   const [step, setStep] = useState<Step>("upload");
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
+  const [recipe, setRecipe] = useState<StyleRecipe>("talking_head");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameOriginal, setRenameOriginal] = useState("");
@@ -490,12 +514,20 @@ function StudioApp({
     const d = await getProject(id);
     setDetail(d);
     setClips(d.clips ?? []);
+    const r = d.manifest?.recipe;
+    if (r === "talking_head" || r === "tutorial" || r === "story") {
+      setRecipe(r);
+    } else {
+      setRecipe("talking_head");
+    }
     if (d.artifacts.script) {
       try {
         setScript(await getScript(id));
       } catch {
         /* ignore */
       }
+    } else {
+      setScript("");
     }
     setCompleted({
       upload: (d.clips?.length ?? 0) > 0,
@@ -663,6 +695,30 @@ function StudioApp({
       ? "Unlimited projects"
       : `${projectQuota.used} of ${projectQuota.limit} projects used`;
 
+  async function onRecipeChange(next: StyleRecipe) {
+    if (!projectId || next === recipe || busy) return;
+    setError("");
+    setBusy(true);
+    setStatus("Updating style recipe…");
+    try {
+      await updateProject(projectId, { recipe: next });
+      setRecipe(next);
+      const d = await refreshProject(projectId);
+      const lostPlan = !d.artifacts.plan;
+      if (lostPlan && (completed.script || completed.broll || completed.final)) {
+        setStatus("Recipe updated — re-run Extract script for the new pacing.");
+        setStep("upload");
+      } else {
+        setStatus("");
+      }
+    } catch (e) {
+      setError(String((e as Error).message || e));
+      setStatus("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onNewCut() {
     if (atProjectLimit) {
       setError(
@@ -685,6 +741,7 @@ function StudioApp({
       setReelStale(false);
       setEditingIndex(null);
       setCompleted({});
+      setRecipe("talking_head");
       setStep("upload");
       setView("wizard");
       await refreshProject(created.id);
@@ -1389,6 +1446,30 @@ function StudioApp({
                       Arrange clips in the order you want them merged. The full sequence
                       can’t exceed {MAX_PROJECT_SECONDS} seconds.
                     </p>
+
+                    {projectId ? (
+                      <div className="recipe-picker" role="group" aria-label="Style recipe">
+                        <p className="recipe-picker-label">Style recipe</p>
+                        <p className="page-sub recipe-picker-hint">
+                          Automatic pacing and zoom — not a timeline editor. Default matches
+                          previous builds.
+                        </p>
+                        <div className="recipe-options">
+                          {STYLE_RECIPES.map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              className={`recipe-option${recipe === opt.id ? " is-active" : ""}`}
+                              disabled={busy}
+                              onClick={() => void onRecipeChange(opt.id)}
+                            >
+                              <strong>{opt.label}</strong>
+                              <span>{opt.blurb}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
 
                     <ul className="clip-list">
                       {pendingFiles.map((f, i) => (

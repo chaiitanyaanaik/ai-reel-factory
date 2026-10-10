@@ -5,7 +5,7 @@ Prompt rules + programmatic validate/repair (LLM alone is not trusted for counts
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from core.config import env_float, env_int, load_env
@@ -24,9 +24,15 @@ class EditorRules:
     min_aroll_share: float = 0.55  # >=55% of runtime should be face/A-roll
 
 
-def load_editor_rules() -> EditorRules:
+def load_editor_rules(recipe: Any = None) -> EditorRules:
+    """
+    Load pacing rules from env, optionally overridden by a RecipeConfig.
+
+    talking_head (all None overrides) → identical to pre-recipe defaults.
+    Caps max_broll_count at VEO_MAX_CLIPS so recipes cannot exceed cost ceiling.
+    """
     load_env()
-    return EditorRules(
+    rules = EditorRules(
         max_broll_count=env_int("EDITOR_MAX_BROLL_COUNT", 5),
         min_broll_seconds=env_float("EDITOR_MIN_BROLL_SECONDS", 2.0),
         max_broll_seconds=env_float("EDITOR_MAX_BROLL_SECONDS", 5.0),
@@ -35,6 +41,27 @@ def load_editor_rules() -> EditorRules:
         min_end_aroll_seconds=env_float("EDITOR_MIN_END_AROLL", 2.5),
         min_aroll_share=env_float("EDITOR_MIN_AROLL_SHARE", 0.55),
     )
+    if recipe is not None:
+        overrides: dict[str, Any] = {}
+        for key in (
+            "max_broll_count",
+            "min_broll_seconds",
+            "max_broll_seconds",
+            "min_gap_between_brolls",
+            "min_hook_aroll_seconds",
+            "min_end_aroll_seconds",
+            "min_aroll_share",
+        ):
+            val = getattr(recipe, key, None)
+            if val is not None:
+                overrides[key] = val
+        if overrides:
+            rules = replace(rules, **overrides)
+
+    veo_ceiling = env_int("VEO_MAX_CLIPS", 5)
+    if veo_ceiling > 0 and rules.max_broll_count > veo_ceiling:
+        rules = replace(rules, max_broll_count=veo_ceiling)
+    return rules
 
 
 def build_editor_prompt(
@@ -46,8 +73,14 @@ def build_editor_prompt(
     style: str,
     total_duration: float,
     rules: EditorRules,
+    recipe_brief: str = "",
 ) -> str:
     refs_block = f"## Reference Material\n{refs}" if refs else ""
+    recipe_block = (
+        f"\n## Style recipe (pacing intent — do NOT change spoken words)\n{recipe_brief}\n"
+        if recipe_brief.strip()
+        else ""
+    )
     return f"""You are a senior Instagram Reel EDITOR (not a copywriter).
 You receive a VERBATIM speech transcript with times.
 Plan an edit: when we see the SPEAKER (aroll) vs B-roll cutaways.
@@ -70,7 +103,7 @@ Do NOT change spoken words.
 - Obey Brand & scene / Style Guide below for casting, setting, mood, and avoid list. Do not invent a niche world that contradicts that block.
 - Ground each suggestion in the spoken words of THAT time window (timed segments), not a generic theme.
 - Keep casting consistent across beats (same age band / look when people appear).
-
+{recipe_block}
 ## Hard pacing guardrails (must obey)
 - At most {rules.max_broll_count} B-roll beats in the whole video.
 - Each B-roll duration between {rules.min_broll_seconds:.1f}s and {rules.max_broll_seconds:.1f}s.

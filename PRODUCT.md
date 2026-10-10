@@ -12,6 +12,7 @@ Creators already have talking-head footage. They need a vertical Reel with B-rol
 2. **B-roll is overlay, not concat** — original speech timeline (and lips) stay continuous.
 3. **Video-first is default.** Teleprompter (topic → invent script → record) is secondary.
 4. **Veo is capped** (`VEO_MAX_CLIPS`) and audio-off on the Developer API (`VEO_GENERATE_AUDIO=0`).
+5. **No timeline editor (for now).** Polish is automatic via **style recipes** (`talking_head` default = legacy pacing/zoom; `tutorial` / `story` adjust gaps, A-roll share, and zoom density). Kill switch: `POLISH_RECIPES=0`.
 
 ## Modes
 
